@@ -1,5 +1,37 @@
 # EfCore.Interceptors
 
+[![NuGet](https://img.shields.io/nuget/v/EfCore.Interceptors?label=NuGet&logo=nuget&color=004880)](https://www.nuget.org/packages/EfCore.Interceptors)
+[![NuGet Downloads](https://img.shields.io/nuget/dt/EfCore.Interceptors?label=downloads)](https://www.nuget.org/packages/EfCore.Interceptors)
+[![License: MIT](https://img.shields.io/github/license/Maxvalpav/EfCoreInterceptors?color=green)](LICENSE)
+
+## English (short)
+
+Production-ready interceptor suite for **Entity Framework Core 10** (.NET 10).
+Covers all 7 EF Core interceptor types with common scenarios: auditing, soft delete, domain events & outbox,
+SQL logging, slow query detection, second-level cache, N+1 detection, query hints, read-only guard,
+session init, connection/transaction lifecycle, query tree, materialization stamping and identity resolution.
+
+```bash
+dotnet add package EfCore.Interceptors
+```
+
+```csharp
+using EfCore.Interceptors;
+
+optionsBuilder.UseSqlServer(connectionString).UseEfInterceptors(s => s
+    .WithAuditing(users)
+    .WithSoftDeletes(users)
+    .WithDomainEvents(dispatcher)
+    .WithSlowQueryWarning(TimeSpan.FromSeconds(2))
+    .WithSqlLogging());
+```
+
+> Full documentation below is in Russian. See code samples and API list — names are in English.
+
+---
+
+## Русский
+
 Библиотека production-ready перехватчиков (interceptors) для **Entity Framework Core 10** (.NET 10).
 Покрывает все 7 типов интерсепторов EF Core типовыми сценариями: аудит, soft delete, доменные события,
 логирование SQL, детект медленных запросов, query hints, read-only guard, session-init, транзакции,
