@@ -81,18 +81,33 @@ public class OutboxProcessor<TContext>(
         {
             cancellationToken.ThrowIfCancellationRequested();
 
+            // Optimistic concurrency guard: skip if already processed by another replica
+            if (message.ProcessedAtUtc is not null) continue;
+
             try
             {
                 await handler.HandleAsync(message, cancellationToken);
 
-                message.ProcessedAtUtc = DateTimeOffset.UtcNow;
-                await db.SaveChangesAsync(cancellationToken);
+                // Atomic stamp: only update if still unprocessed (prevents duplicate delivery)
+                var affected = await db.Set<OutboxMessage>()
+                    .Where(m => m.Id == message.Id && m.ProcessedAtUtc == null)
+                    .ExecuteUpdateAsync(s => s.SetProperty(m => m.ProcessedAtUtc, DateTimeOffset.UtcNow), cancellationToken);
 
-                _logger.LogDebug("Outbox message {MessageId} ({Type}) delivered.", message.Id, message.Type);
+                if (affected == 0)
+                {
+                    _logger.LogWarning("Outbox message {MessageId} was already processed by another worker; skipping.", message.Id);
+                    db.ChangeTracker.Clear();
+                }
+                else
+                {
+                    _logger.LogDebug("Outbox message {MessageId} ({Type}) delivered.", message.Id, message.Type);
+                }
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
-                // Poison/failed message: left unprocessed, retried next cycle.
+                // Poison/failed message: left unprocessed, retried next cycle with backoff.
+                // Detach to avoid tracking corrupted state.
+                db.Entry(message).State = EntityState.Unchanged;
                 _logger.LogError(ex,
                     "Outbox message {MessageId} ({Type}) failed; will retry.",
                     message.Id, message.Type);

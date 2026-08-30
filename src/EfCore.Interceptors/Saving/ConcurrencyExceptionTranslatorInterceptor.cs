@@ -21,4 +21,18 @@ public class ConcurrencyExceptionTranslatorInterceptor : SaveChangesInterceptor
 
         base.SaveChangesFailed(eventData);
     }
+
+    public override Task SaveChangesFailedAsync(
+        DbContextErrorEventData eventData,
+        CancellationToken cancellationToken = default)
+    {
+        if (eventData.Exception is DbUpdateConcurrencyException concurrencyFailure)
+        {
+            throw new ConcurrencyConflictException(
+                "The record was modified by another user. Reload and retry.",
+                concurrencyFailure);
+        }
+
+        return base.SaveChangesFailedAsync(eventData, cancellationToken);
+    }
 }

@@ -1,4 +1,4 @@
-using System.Collections.Concurrent;
+using System.Runtime.CompilerServices;
 using System.Text.Json;
 using EfCore.Interceptors.Abstractions;
 using EfCore.Interceptors.Entities;
@@ -14,11 +14,16 @@ namespace EfCore.Interceptors.Saving;
 /// A background worker (not included) reads OutboxMessages, delivers them and stamps ProcessedAtUtc.
 /// Requirements: <c>modelBuilder.Entity&lt;OutboxMessage&gt;();</c> must be mapped.
 /// </summary>
-public class OutboxSaveChangesInterceptor : SaveChangesInterceptor
+public class OutboxSaveChangesInterceptor(TimeProvider? timeProvider = null) : SaveChangesInterceptor
 {
     private static readonly JsonSerializerOptions JsonOptions = new() { WriteIndented = false };
 
-    private readonly ConcurrentDictionary<DbContext, List<(IHasDomainEvents Aggregate, IReadOnlyList<IDomainEvent> Events)>> _pending = new();
+    private readonly TimeProvider _timeProvider = timeProvider ?? TimeProvider.System;
+    private readonly ConditionalWeakTable<DbContext, PendingHolder> _pending = new();
+    private sealed class PendingHolder(List<(IHasDomainEvents Aggregate, IReadOnlyList<IDomainEvent> Events)> snapshot)
+    {
+        public List<(IHasDomainEvents Aggregate, IReadOnlyList<IDomainEvent> Events)> Snapshot { get; } = snapshot;
+    }
 
     public override InterceptionResult<int> SavingChanges(
         DbContextEventData eventData, InterceptionResult<int> result)
@@ -40,7 +45,7 @@ public class OutboxSaveChangesInterceptor : SaveChangesInterceptor
     {
         if (eventData.Context is not null)
         {
-            _pending.TryRemove(eventData.Context, out _);
+            _pending.Remove(eventData.Context);
         }
 
         return base.SavedChanges(eventData, result);
@@ -51,7 +56,7 @@ public class OutboxSaveChangesInterceptor : SaveChangesInterceptor
     {
         if (eventData.Context is not null)
         {
-            _pending.TryRemove(eventData.Context, out _);
+            _pending.Remove(eventData.Context);
         }
 
         return base.SavedChangesAsync(eventData, result, cancellationToken);
@@ -88,7 +93,7 @@ public class OutboxSaveChangesInterceptor : SaveChangesInterceptor
                 "OutboxMessage is not mapped. Call modelBuilder.Entity<OutboxMessage>() in OnModelCreating.");
         }
 
-        var now = DateTimeOffset.UtcNow;
+        var now = _timeProvider.GetUtcNow();
 
         foreach (var (aggregate, events) in snapshot)
         {
@@ -106,15 +111,17 @@ public class OutboxSaveChangesInterceptor : SaveChangesInterceptor
             aggregate.ClearDomainEvents();
         }
 
-        _pending[context] = snapshot;
+        _pending.Remove(context);
+        _pending.Add(context, new PendingHolder(snapshot));
     }
 
     public override void SaveChangesFailed(DbContextErrorEventData eventData)
     {
-        if (eventData.Context is { } context && _pending.TryRemove(context, out var snapshot))
+        if (eventData.Context is { } context && _pending.TryGetValue(context, out var holder))
         {
+            _pending.Remove(context);
             // The outbox rows rolled back with the transaction: put the events back on their aggregates.
-            foreach (var (aggregate, events) in snapshot)
+            foreach (var (aggregate, events) in holder.Snapshot)
             {
                 foreach (var domainEvent in events)
                 {
@@ -129,9 +136,10 @@ public class OutboxSaveChangesInterceptor : SaveChangesInterceptor
     public override Task SaveChangesFailedAsync(
         DbContextErrorEventData eventData, CancellationToken cancellationToken = default)
     {
-        if (eventData.Context is { } context && _pending.TryRemove(context, out var snapshot))
+        if (eventData.Context is { } context && _pending.TryGetValue(context, out var holder))
         {
-            foreach (var (aggregate, events) in snapshot)
+            _pending.Remove(context);
+            foreach (var (aggregate, events) in holder.Snapshot)
             {
                 foreach (var domainEvent in events)
                 {

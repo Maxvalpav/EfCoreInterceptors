@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Reflection;
 using EfCore.Interceptors.Abstractions;
 using Microsoft.EntityFrameworkCore;
@@ -16,6 +17,7 @@ public class PropertyEncryptionSaveChangesInterceptor(
     IPropertyValueEncryptor encryptor) : SaveChangesInterceptor
 {
     private readonly IPropertyValueEncryptor _encryptor = encryptor;
+    private readonly ConcurrentDictionary<IProperty, bool> _encryptedCache = new();
 
     public override InterceptionResult<int> SavingChanges(
         DbContextEventData eventData, InterceptionResult<int> result)
@@ -49,10 +51,16 @@ public class PropertyEncryptionSaveChangesInterceptor(
 
             foreach (var property in entry.Properties)
             {
-                var attribute = property.Metadata.PropertyInfo?.GetCustomAttribute<EncryptedAttribute>();
-                if (attribute is null ||
-                    property.Metadata.ClrType != typeof(string) ||
+                if (property.Metadata.ClrType != typeof(string) ||
                     (entry.State == EntityState.Modified && !property.IsModified))
+                {
+                    continue;
+                }
+
+                var isEncrypted = _encryptedCache.GetOrAdd(property.Metadata,
+                    p => p.PropertyInfo?.GetCustomAttribute<EncryptedAttribute>() is not null);
+
+                if (!isEncrypted)
                 {
                     continue;
                 }

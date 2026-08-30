@@ -26,10 +26,13 @@ public static class ServiceCollectionExtensions
         var setup = new EfInterceptorsSetup();
         configure?.Invoke(setup);
 
-        foreach (var interceptor in setup.Interceptors.Distinct())
+        foreach (var interceptor in setup.Interceptors)
         {
-            // Register by concrete type so multiple interceptors of the same family survive.
-            services.TryAddTransient(interceptor.GetType(), _ => interceptor);
+            // Stateless interceptors are safe to share singleton. Scoped interceptors (e.g. per-request user)
+            // should be registered manually, not via this helper — see README.
+            services.AddSingleton<IInterceptor>(interceptor);
+            // Also register concrete type for direct resolution
+            services.AddSingleton(interceptor.GetType(), interceptor);
         }
 
         return services;

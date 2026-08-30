@@ -1,5 +1,5 @@
-using System.Collections.Concurrent;
 using System.Diagnostics;
+using System.Runtime.CompilerServices;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.Logging;
@@ -18,7 +18,8 @@ public class SlowSaveChangesDetector(
     private readonly TimeSpan _threshold = threshold;
     private readonly ILogger _logger =
         loggerFactory?.CreateLogger("EfCore.Interceptors.SlowSave") ?? NullLogger.Instance;
-    private readonly ConcurrentDictionary<DbContext, long> _startedAt = new();
+    private readonly ConditionalWeakTable<DbContext, TimestampHolder> _startedAt = new();
+    private sealed class TimestampHolder(long timestamp) { public long Timestamp { get; } = timestamp; }
 
     public override InterceptionResult<int> SavingChanges(
         DbContextEventData eventData, InterceptionResult<int> result)
@@ -51,22 +52,45 @@ public class SlowSaveChangesDetector(
         return base.SavedChangesAsync(eventData, result, cancellationToken);
     }
 
+    public override void SaveChangesFailed(DbContextErrorEventData eventData)
+    {
+        if (eventData.Context is not null)
+        {
+            _startedAt.Remove(eventData.Context);
+        }
+
+        base.SaveChangesFailed(eventData);
+    }
+
+    public override Task SaveChangesFailedAsync(
+        DbContextErrorEventData eventData, CancellationToken cancellationToken = default)
+    {
+        if (eventData.Context is not null)
+        {
+            _startedAt.Remove(eventData.Context);
+        }
+
+        return base.SaveChangesFailedAsync(eventData, cancellationToken);
+    }
+
     private void StartClock(DbContext? context)
     {
         if (context is not null)
         {
-            _startedAt[context] = Stopwatch.GetTimestamp();
+            _startedAt.Remove(context);
+            _startedAt.Add(context, new TimestampHolder(Stopwatch.GetTimestamp()));
         }
     }
 
     protected virtual void Check(DbContext? context, int entitiesCount)
     {
-        if (context is null || !_startedAt.TryRemove(context, out var timestamp))
+        if (context is null || !_startedAt.TryGetValue(context, out var holder))
         {
             return;
         }
 
-        var elapsed = Stopwatch.GetElapsedTime(timestamp);
+        _startedAt.Remove(context);
+        var elapsed = Stopwatch.GetElapsedTime(holder.Timestamp);
         if (elapsed >= _threshold)
         {
             _logger.LogWarning(

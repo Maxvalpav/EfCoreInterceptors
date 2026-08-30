@@ -1,4 +1,4 @@
-using System.Collections.Concurrent;
+using System.Runtime.CompilerServices;
 using EfCore.Interceptors.Abstractions;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
@@ -14,7 +14,12 @@ namespace EfCore.Interceptors.Saving;
 /// </summary>
 public class DomainEventsSaveChangesInterceptor(IDomainEventDispatcher? dispatcher = null) : SaveChangesInterceptor
 {
-    private readonly ConcurrentDictionary<DbContext, List<(IHasDomainEvents Aggregate, IReadOnlyList<IDomainEvent> Events)>> _pending = new();
+    private readonly ConditionalWeakTable<DbContext, PendingHolder> _pending = new();
+    private sealed class PendingHolder(List<(IHasDomainEvents Aggregate, IReadOnlyList<IDomainEvent> Events)> snapshot)
+    {
+        public List<(IHasDomainEvents Aggregate, IReadOnlyList<IDomainEvent> Events)> Snapshot { get; } = snapshot;
+    }
+
     private readonly IDomainEventDispatcher? _dispatcher = dispatcher;
 
     public override InterceptionResult<int> SavingChanges(
@@ -50,9 +55,10 @@ public class DomainEventsSaveChangesInterceptor(IDomainEventDispatcher? dispatch
 
     public override void SaveChangesFailed(DbContextErrorEventData eventData)
     {
+        // Keep aggregate events intact for retry — only drop the pending snapshot.
         if (eventData.Context is not null)
         {
-            _pending.TryRemove(eventData.Context, out _);
+            _pending.Remove(eventData.Context);
         }
 
         base.SaveChangesFailed(eventData);
@@ -63,7 +69,7 @@ public class DomainEventsSaveChangesInterceptor(IDomainEventDispatcher? dispatch
     {
         if (eventData.Context is not null)
         {
-            _pending.TryRemove(eventData.Context, out _);
+            _pending.Remove(eventData.Context);
         }
 
         return base.SaveChangesFailedAsync(eventData, cancellationToken);
@@ -91,61 +97,77 @@ public class DomainEventsSaveChangesInterceptor(IDomainEventDispatcher? dispatch
 
         if (snapshot is not null)
         {
-            _pending[context] = snapshot;
+            _pending.Remove(context);
+            _pending.Add(context, new PendingHolder(snapshot));
         }
     }
 
     private void Publish(DbContext? context)
     {
-        if (context is null || !_pending.TryRemove(context, out var snapshot))
+        if (context is null || !_pending.TryGetValue(context, out var holder))
         {
             return;
         }
 
-        foreach (var (aggregate, _) in snapshot)
-        {
-            aggregate.ClearDomainEvents();
-        }
-
+        var snapshot = holder.Snapshot;
         var events = snapshot.SelectMany(s => s.Events).ToArray();
 
         if (_dispatcher is null || events.Length == 0)
         {
+            _pending.Remove(context);
+            foreach (var (aggregate, _) in snapshot)
+            {
+                aggregate.ClearDomainEvents();
+            }
+
             return;
         }
 
         try
         {
             _dispatcher.Dispatch(events);
+            _pending.Remove(context);
+            foreach (var (aggregate, _) in snapshot)
+            {
+                aggregate.ClearDomainEvents();
+            }
         }
         catch (Exception ex)
         {
+            // Keep pending + aggregate events for retry; do not clear.
             throw new InvalidOperationException("Domain event dispatch failed after a successful SaveChanges.", ex);
         }
     }
 
     private async Task PublishAsync(DbContext? context, CancellationToken cancellationToken)
     {
-        if (context is null || !_pending.TryRemove(context, out var snapshot))
+        if (context is null || !_pending.TryGetValue(context, out var holder))
         {
             return;
         }
 
-        foreach (var (aggregate, _) in snapshot)
-        {
-            aggregate.ClearDomainEvents();
-        }
-
+        var snapshot = holder.Snapshot;
         var events = snapshot.SelectMany(s => s.Events).ToArray();
 
         if (_dispatcher is null || events.Length == 0)
         {
+            _pending.Remove(context);
+            foreach (var (aggregate, _) in snapshot)
+            {
+                aggregate.ClearDomainEvents();
+            }
+
             return;
         }
 
         try
         {
             await _dispatcher.DispatchAsync(events, cancellationToken);
+            _pending.Remove(context);
+            foreach (var (aggregate, _) in snapshot)
+            {
+                aggregate.ClearDomainEvents();
+            }
         }
         catch (Exception ex)
         {

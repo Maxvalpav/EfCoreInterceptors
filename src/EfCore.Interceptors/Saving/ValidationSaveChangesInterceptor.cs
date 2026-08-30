@@ -50,9 +50,15 @@ public class ValidationSaveChangesInterceptor : SaveChangesInterceptor
             if (!Validator.TryValidateObject(entry.Entity, validationContext, results, validateAllProperties: true))
             {
                 var key = $"{entry.Metadata.ClrType.Name}[{DescribeKey(entry)}]";
-                failures[key] = results
-                    .Select(r => r.ErrorMessage ?? "Invalid.")
-                    .ToArray();
+                var messages = results.Select(r => r.ErrorMessage ?? "Invalid.").ToArray();
+                if (failures.TryGetValue(key, out var existing))
+                {
+                    failures[key] = [.. existing, .. messages];
+                }
+                else
+                {
+                    failures[key] = messages;
+                }
             }
         }
 
@@ -63,9 +69,13 @@ public class ValidationSaveChangesInterceptor : SaveChangesInterceptor
     }
 
     private static string DescribeKey(EntityEntry entry)
-        => string.Join(",",
-            entry.Metadata.FindPrimaryKey()!.Properties
+    {
+        var pk = entry.Metadata.FindPrimaryKey();
+        if (pk is null) return "no-key";
+        return string.Join(",",
+            pk.Properties
                 .Select(p => entry.Property(p.Name).CurrentValue));
+    }
 }
 
 /// <summary>All DataAnnotations violations found by ValidationSaveChangesInterceptor.</summary>

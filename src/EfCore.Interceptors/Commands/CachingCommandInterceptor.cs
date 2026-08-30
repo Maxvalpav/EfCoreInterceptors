@@ -25,15 +25,18 @@ public class CachingCommandInterceptor : DbCommandInterceptor
     private readonly TimeSpan _timeToLive;
     private readonly bool _skipInsideTransactions;
     private readonly bool _invalidateOnWrites;
+    private readonly int _maxEntries;
 
     public CachingCommandInterceptor(
         TimeSpan? timeToLive = null,
         bool skipInsideTransactions = true,
-        bool invalidateOnWrites = false)
+        bool invalidateOnWrites = false,
+        int maxEntries = 1000)
     {
         _timeToLive = timeToLive ?? TimeSpan.FromSeconds(30);
         _skipInsideTransactions = skipInsideTransactions;
         _invalidateOnWrites = invalidateOnWrites;
+        _maxEntries = Math.Max(1, maxEntries);
     }
 
     /// <summary>Number of currently cached query results.</summary>
@@ -68,7 +71,7 @@ public class CachingCommandInterceptor : DbCommandInterceptor
         using (var reader = command.ExecuteReader())
         {
             var snapshot = Buffer(reader);
-            _cache[key] = new CacheEntry(snapshot, DateTimeOffset.UtcNow.Add(_timeToLive));
+            AddOrEvict(key, snapshot);
             return InterceptionResult<DbDataReader>.SuppressWithResult(new CachedDataReader(snapshot));
         }
     }
@@ -91,7 +94,7 @@ public class CachingCommandInterceptor : DbCommandInterceptor
         await using (var reader = await command.ExecuteReaderAsync(cancellationToken))
         {
             var snapshot = await BufferAsync(reader, cancellationToken);
-            _cache[key] = new CacheEntry(snapshot, DateTimeOffset.UtcNow.Add(_timeToLive));
+            AddOrEvict(key, snapshot);
             return InterceptionResult<DbDataReader>.SuppressWithResult(new CachedDataReader(snapshot));
         }
     }
@@ -99,6 +102,7 @@ public class CachingCommandInterceptor : DbCommandInterceptor
     /// <summary>
     /// Optional write-through invalidation: when enabled, any non-query (INSERT/UPDATE/DELETE,
     /// including raw SQL) clears the cache so subsequent reads see fresh data.
+    /// Covers NonQuery, Scalar and Reader writes (INSERT RETURNING).
     /// </summary>
     public override int NonQueryExecuted(DbCommand command, CommandExecutedEventData eventData, int result)
     {
@@ -122,23 +126,81 @@ public class CachingCommandInterceptor : DbCommandInterceptor
         return await base.NonQueryExecutedAsync(command, eventData, result, cancellationToken);
     }
 
+    public override DbDataReader ReaderExecuted(DbCommand command, CommandExecutedEventData eventData, DbDataReader result)
+    {
+        if (_invalidateOnWrites && SqlWriteDetector.IsWrite(command.CommandText))
+        {
+            InvalidateAll();
+        }
+
+        return base.ReaderExecuted(command, eventData, result);
+    }
+
+    public override object? ScalarExecuted(DbCommand command, CommandExecutedEventData eventData, object? result)
+    {
+        if (_invalidateOnWrites && SqlWriteDetector.IsWrite(command.CommandText))
+        {
+            InvalidateAll();
+        }
+
+        return base.ScalarExecuted(command, eventData, result);
+    }
+
+    private void AddOrEvict(string key, CachedQueryResult snapshot)
+    {
+        if (_cache.Count >= _maxEntries)
+        {
+            // Evict expired entries first
+            foreach (var kvp in _cache)
+            {
+                if (kvp.Value.ExpiresAtUtc <= DateTimeOffset.UtcNow)
+                {
+                    _cache.TryRemove(kvp.Key, out _);
+                }
+            }
+
+            // Still over limit: remove oldest arbitrary entry
+            if (_cache.Count >= _maxEntries)
+            {
+                var first = _cache.Keys.FirstOrDefault();
+                if (first is not null)
+                {
+                    _cache.TryRemove(first, out _);
+                }
+            }
+        }
+
+        _cache[key] = new CacheEntry(snapshot, DateTimeOffset.UtcNow.Add(_timeToLive));
+    }
+
     private bool Cacheable(CommandEventData eventData, DbCommand command)
         => IsSelect(command.CommandText)
-           && (!_skipInsideTransactions || eventData.Context?.Database.CurrentTransaction is null);
+           && (!_skipInsideTransactions || eventData.Context?.Database.CurrentTransaction is null)
+           && command.Transaction is null;
 
     private static bool IsSelect(string sql)
     {
         var trimmed = sql.TrimStart();
-        // Skip EF's TagWith comments.
-        while (trimmed.StartsWith("--", StringComparison.Ordinal))
+        // Interleaved skip of line and block comments
+        while (true)
         {
-            var newline = trimmed.IndexOf('\n');
-            if (newline < 0)
+            if (trimmed.StartsWith("--", StringComparison.Ordinal))
             {
-                return false;
+                var newline = trimmed.IndexOf('\n');
+                if (newline < 0) return false;
+                trimmed = trimmed[(newline + 1)..].TrimStart();
+                continue;
             }
 
-            trimmed = trimmed[(newline + 1)..].TrimStart();
+            if (trimmed.StartsWith("/*", StringComparison.Ordinal))
+            {
+                var end = trimmed.IndexOf("*/", StringComparison.Ordinal);
+                if (end < 0) return false;
+                trimmed = trimmed[(end + 2)..].TrimStart();
+                continue;
+            }
+
+            break;
         }
 
         return trimmed.StartsWith("SELECT", StringComparison.OrdinalIgnoreCase) || trimmed.StartsWith("WITH", StringComparison.OrdinalIgnoreCase);
@@ -168,8 +230,32 @@ public class CachingCommandInterceptor : DbCommandInterceptor
         var sb = new System.Text.StringBuilder(command.CommandText);
         foreach (var parameter in command.Parameters.OfType<DbParameter>())
         {
-            sb.Append('|').Append(parameter.ParameterName).Append('=')
-              .Append(Convert.ToString(parameter.Value, System.Globalization.CultureInfo.InvariantCulture));
+            var val = parameter.Value;
+            string valStr;
+            if (val is null or DBNull)
+            {
+                valStr = "NULL";
+            }
+            else if (val is byte[] bytes)
+            {
+                valStr = $"[bytes:{bytes.Length}:hash:{System.Security.Cryptography.SHA256.HashData(bytes)[0]:X2}]";
+            }
+            else
+            {
+                var s = Convert.ToString(val, System.Globalization.CultureInfo.InvariantCulture) ?? string.Empty;
+                if (s.Length > 256)
+                {
+                    // Use hash to prevent collisions on same prefix
+                    var hash = System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(s));
+                    valStr = $"[len:{s.Length}:hash:{Convert.ToHexString(hash)[..8]}:{s[..64]}...]";
+                }
+                else
+                {
+                    valStr = s;
+                }
+            }
+
+            sb.Append('|').Append(parameter.ParameterName).Append('=').Append(valStr);
         }
 
         return sb.ToString();
@@ -178,6 +264,7 @@ public class CachingCommandInterceptor : DbCommandInterceptor
     private static CachedQueryResult Buffer(DbDataReader source)
     {
         var names = Enumerable.Range(0, source.FieldCount).Select(source.GetName).ToArray();
+        var types = Enumerable.Range(0, source.FieldCount).Select(source.GetFieldType).ToArray();
         var rows = new List<object[]>();
         while (source.Read())
         {
@@ -187,12 +274,13 @@ public class CachingCommandInterceptor : DbCommandInterceptor
             rows.Add(row);
         }
 
-        return new CachedQueryResult(names, rows);
+        return new CachedQueryResult(names, types, rows);
     }
 
     private static async Task<CachedQueryResult> BufferAsync(DbDataReader source, CancellationToken ct)
     {
         var names = Enumerable.Range(0, source.FieldCount).Select(source.GetName).ToArray();
+        var types = Enumerable.Range(0, source.FieldCount).Select(source.GetFieldType).ToArray();
         var rows = new List<object[]>();
         while (await source.ReadAsync(ct))
         {
@@ -202,7 +290,7 @@ public class CachingCommandInterceptor : DbCommandInterceptor
             rows.Add(row);
         }
 
-        return new CachedQueryResult(names, rows);
+        return new CachedQueryResult(names, types, rows);
     }
 
     private static void Normalize(object[] row)
@@ -214,8 +302,12 @@ public class CachingCommandInterceptor : DbCommandInterceptor
     }
 }
 
-/// <summary>Buffered snapshot of a query result set (columns + rows) stored in the cache.</summary>
-public sealed record CachedQueryResult(string[] ColumnNames, List<object[]> Rows);
+/// <summary>Buffered snapshot of a query result set (columns + rows + types) stored in the cache.</summary>
+public sealed record CachedQueryResult(string[] ColumnNames, Type[] FieldTypes, List<object[]> Rows)
+{
+    public CachedQueryResult(string[] columnNames, List<object[]> rows)
+        : this(columnNames, rows.Select(_ => typeof(object)).ToArray(), rows) { }
+}
 
 /// <summary>A repeatable DbDataReader over a buffered query result (used for every cache serve).</summary>
 public sealed class CachedDataReader : DbDataReader
@@ -230,11 +322,21 @@ public sealed class CachedDataReader : DbDataReader
             ? _result.Rows[_rowIndex]
             : throw new InvalidOperationException("No current row.");
 
+    private bool _closed;
+
     public override int FieldCount => _result.ColumnNames.Length;
     public override bool HasRows => _result.Rows.Count > 0;
-    public override bool IsClosed => false;
+    public override bool IsClosed => _closed;
     public override int Depth => 0;
     public override int RecordsAffected => -1;
+
+    public override void Close() => _closed = true;
+
+    protected override void Dispose(bool disposing)
+    {
+        _closed = true;
+        base.Dispose(disposing);
+    }
 
     public override object this[int ordinal] => GetValue(ordinal);
     public override object this[string name] => GetValue(GetOrdinal(name));
@@ -243,7 +345,7 @@ public sealed class CachedDataReader : DbDataReader
 
     public override string GetName(int ordinal) => _result.ColumnNames[ordinal];
 
-    public override string GetDataTypeName(int ordinal) => GetFieldType(ordinal).Name;
+    public override string GetDataTypeName(int ordinal) => _result.FieldTypes[ordinal].Name;
 
     public override int GetValues(object[] values)
     {
@@ -279,8 +381,7 @@ public sealed class CachedDataReader : DbDataReader
 
     public override object GetValue(int ordinal) => Current[ordinal];
     public override bool IsDBNull(int ordinal) => Current[ordinal] is DBNull;
-    public override Type GetFieldType(int ordinal)
-        => Current[ordinal] is DBNull ? typeof(object) : Current[ordinal].GetType();
+    public override Type GetFieldType(int ordinal) => _result.FieldTypes[ordinal];
 
     public override T GetFieldValue<T>(int ordinal) => (T)ConvertValue(GetValue(ordinal), typeof(T))!;
     public override bool GetBoolean(int ordinal) => (bool)ConvertValue(GetValue(ordinal), typeof(bool))!;
@@ -300,11 +401,49 @@ public sealed class CachedDataReader : DbDataReader
     public override bool NextResult() => false;
 
     public override long GetBytes(int ordinal, long dataOffset, byte[]? buffer, int bufferOffset, int length)
-        => throw new NotSupportedException();
+    {
+        var value = GetValue(ordinal);
+        if (value is DBNull) return 0;
+        var bytes = value as byte[] ?? (value is string s ? System.Text.Encoding.UTF8.GetBytes(s) : throw new InvalidCastException($"Column {ordinal} is {value.GetType().Name}, not bytes."));
+        if (buffer is null) return bytes.Length;
+        var available = bytes.Length - (int)dataOffset;
+        if (available <= 0) return 0;
+        var toCopy = Math.Min(available, length);
+        Array.Copy(bytes, (int)dataOffset, buffer, bufferOffset, toCopy);
+        return toCopy;
+    }
+
     public override long GetChars(int ordinal, long dataOffset, char[]? buffer, int bufferOffset, int length)
-        => throw new NotSupportedException();
-    public override DataTable? GetSchemaTable() => null;
-    public override Stream GetStream(int ordinal) => throw new NotSupportedException();
+    {
+        var value = GetValue(ordinal);
+        if (value is DBNull) return 0;
+        var str = value as string ?? Convert.ToString(value, System.Globalization.CultureInfo.InvariantCulture) ?? string.Empty;
+        if (buffer is null) return str.Length;
+        var available = str.Length - (int)dataOffset;
+        if (available <= 0) return 0;
+        var toCopy = Math.Min(available, length);
+        str.CopyTo((int)dataOffset, buffer, bufferOffset, toCopy);
+        return toCopy;
+    }
+
+    public override DataTable? GetSchemaTable()
+    {
+        var table = new DataTable();
+        for (var i = 0; i < _result.ColumnNames.Length; i++)
+        {
+            table.Columns.Add(_result.ColumnNames[i], _result.FieldTypes[i]);
+        }
+
+        return table;
+    }
+    public override Stream GetStream(int ordinal)
+    {
+        var value = GetValue(ordinal);
+        if (value is DBNull) return Stream.Null;
+        if (value is byte[] bytes) return new MemoryStream(bytes, writable: false);
+        if (value is Stream s) return s;
+        throw new InvalidCastException($"Column {ordinal} is {value.GetType().Name}, not Stream/byte[].");
+    }
     public override TextReader GetTextReader(int ordinal) => new StringReader(IsDBNull(ordinal) ? string.Empty : GetString(ordinal));
 
     private static object? ConvertValue(object? value, Type targetType)

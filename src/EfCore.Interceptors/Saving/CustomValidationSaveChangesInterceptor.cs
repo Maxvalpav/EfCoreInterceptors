@@ -54,7 +54,14 @@ public class CustomValidationSaveChangesInterceptor(
             if (messages.Length > 0)
             {
                 var key = $"{entry.Metadata.ClrType.Name}[{DescribeKey(entry)}]";
-                failures[key] = messages;
+                if (failures.TryGetValue(key, out var existing))
+                {
+                    failures[key] = [.. existing, .. messages];
+                }
+                else
+                {
+                    failures[key] = messages;
+                }
             }
         }
 
@@ -65,7 +72,11 @@ public class CustomValidationSaveChangesInterceptor(
     }
 
     private static string DescribeKey(EntityEntry entry)
-        => string.Join(",",
-            entry.Metadata.FindPrimaryKey()!.Properties
+    {
+        var pk = entry.Metadata.FindPrimaryKey();
+        if (pk is null) return "no-key";
+        return string.Join(",",
+            pk.Properties
                 .Select(p => entry.Property(p.Name).CurrentValue));
+    }
 }

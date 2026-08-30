@@ -121,8 +121,8 @@ public sealed class EfInterceptorsSetup
     /// Atomic outbox: serializes domain events into the mapped OutboxMessages table inside the same
     /// transaction as the business change. Requires modelBuilder.Entity&lt;OutboxMessage&gt;().
     /// </summary>
-    public EfInterceptorsSetup WithOutbox()
-        => Add(new Saving.OutboxSaveChangesInterceptor());
+    public EfInterceptorsSetup WithOutbox(TimeProvider? timeProvider = null)
+        => Add(new Saving.OutboxSaveChangesInterceptor(timeProvider));
 
     /// <summary>Stamps TenantId on inserts and rejects cross-tenant modifications.</summary>
     public EfInterceptorsSetup WithMultiTenancy(Abstractions.ITenantProvider tenantProvider)
@@ -365,8 +365,8 @@ public sealed class EfInterceptorsSetup
            .Add(new Materialization.PropertyDecryptionMaterializationInterceptor(encryptor));
 
     /// <summary>Resilience retries for transient command failures.</summary>
-    public EfInterceptorsSetup WithResilience(int maxRetries = 2, TimeSpan? baseDelay = null, ILoggerFactory? loggerFactory = null)
-        => Add(new Commands.ResilienceCommandInterceptor(maxRetries, baseDelay, loggerFactory));
+    public EfInterceptorsSetup WithResilience(int maxRetries = 2, TimeSpan? baseDelay = null, TimeSpan? maxDelay = null, ILoggerFactory? loggerFactory = null)
+        => Add(new Commands.ResilienceCommandInterceptor(maxRetries, baseDelay, maxDelay, loggerFactory));
 
     /// <summary>HybridCache second-level cache (shared IMemoryCache).</summary>
     public EfInterceptorsSetup WithHybridCache(Microsoft.Extensions.Caching.Memory.IMemoryCache cache, TimeSpan? ttl = null, bool skipInsideTransactions = true)

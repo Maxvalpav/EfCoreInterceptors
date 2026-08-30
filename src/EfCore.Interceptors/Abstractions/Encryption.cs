@@ -28,9 +28,18 @@ public interface IPropertyValueEncryptor
 /// and per-record nonces. GCM nonce is random per value, so equality search on ciphertexts
 /// is not possible by design.
 /// </summary>
-public sealed class AesGcmPropertyValueEncryptor(string base64Key) : IPropertyValueEncryptor
+public sealed class AesGcmPropertyValueEncryptor : IPropertyValueEncryptor
 {
-    private readonly byte[] _key = Convert.FromBase64String(base64Key);
+    private readonly byte[] _key;
+
+    public AesGcmPropertyValueEncryptor(string base64Key)
+    {
+        _key = Convert.FromBase64String(base64Key);
+        if (_key.Length != 32)
+        {
+            throw new ArgumentException("AES-256 key must be 32 bytes (Base64 of 32 bytes).", nameof(base64Key));
+        }
+    }
 
     public string? Encrypt(string? plaintext)
     {
@@ -41,10 +50,13 @@ public sealed class AesGcmPropertyValueEncryptor(string base64Key) : IPropertyVa
 
         var nonce = RandomNumberGenerator.GetBytes(12);
         var tag = new byte[16];
-        var cipher = new byte[Encoding.UTF8.GetByteCount(plaintext)];
+        var plainBytes = Encoding.UTF8.GetBytes(plaintext);
+        var cipher = new byte[plainBytes.Length];
 
+#pragma warning disable SYSLIB0053
         using var aes = new AesGcm(_key, 16);
-        aes.Encrypt(nonce, Encoding.UTF8.GetBytes(plaintext), cipher, tag);
+        aes.Encrypt(nonce, plainBytes, cipher, tag);
+#pragma warning restore SYSLIB0053
 
         // payload = [12-byte nonce][ciphertext][16-byte tag], stored base64
         var payload = new byte[nonce.Length + cipher.Length + tag.Length];
@@ -78,8 +90,10 @@ public sealed class AesGcmPropertyValueEncryptor(string base64Key) : IPropertyVa
         Buffer.BlockCopy(payload, nonceLen + cipherLen, tag, 0, tagLen);
 
         var plain = new byte[cipherLen];
+#pragma warning disable SYSLIB0053
         using var aes = new AesGcm(_key, 16);
         aes.Decrypt(nonce, cipher, tag, plain);
+#pragma warning restore SYSLIB0053
 
         return Encoding.UTF8.GetString(plain);
     }

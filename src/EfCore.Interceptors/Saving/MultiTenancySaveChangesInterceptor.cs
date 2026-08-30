@@ -45,6 +45,19 @@ public class MultiTenancySaveChangesInterceptor(ITenantProvider tenantProvider) 
             switch (entry.State)
             {
                 case EntityState.Added:
+                    if (currentTenant is null)
+                    {
+                        throw new CrossTenantAccessException(
+                            $"Cannot insert '{entry.Metadata.ClrType.Name}' without current tenant. CurrentTenantId is null.");
+                    }
+
+                    // Prevent privilege escalation: if entity already has a different tenant set, reject
+                    if (entry.Entity.TenantId is not null && !string.Equals(entry.Entity.TenantId, currentTenant, StringComparison.Ordinal))
+                    {
+                        throw new CrossTenantAccessException(
+                            $"Entity '{entry.Metadata.ClrType.Name}' pre-set to tenant '{entry.Entity.TenantId}', but current tenant is '{currentTenant}'.");
+                    }
+
                     entry.Entity.TenantId = currentTenant;
                     break;
 
@@ -52,6 +65,10 @@ public class MultiTenancySaveChangesInterceptor(ITenantProvider tenantProvider) 
                     throw new CrossTenantAccessException(
                         $"Entity '{entry.Metadata.ClrType.Name}' belongs to tenant '{entry.Entity.TenantId}', " +
                         $"but the current tenant is '{currentTenant}'.");
+
+                case EntityState.Deleted when !string.Equals(entry.Entity.TenantId, currentTenant, StringComparison.Ordinal):
+                    throw new CrossTenantAccessException(
+                        $"Cannot delete '{entry.Metadata.ClrType.Name}' of tenant '{entry.Entity.TenantId}' from current tenant '{currentTenant}'.");
             }
         }
     }

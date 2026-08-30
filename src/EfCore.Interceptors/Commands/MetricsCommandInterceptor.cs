@@ -12,8 +12,6 @@ namespace EfCore.Interceptors.Commands;
 /// </summary>
 public class MetricsCommandInterceptor : DbCommandInterceptor
 {
-    private const string MeterName = "EfCore.Interceptors";
-
     private readonly Meter _meter;
     private readonly Histogram<double> _durationMs;
     private readonly Counter<long> _executed;
@@ -21,7 +19,9 @@ public class MetricsCommandInterceptor : DbCommandInterceptor
 
     public MetricsCommandInterceptor(string? meterName = null, string? version = null)
     {
-        _meter = new Meter(meterName ?? MeterName, version ?? "1.0.0");
+        _meter = meterName is null && version is null
+            ? Observability.SharedMeter.Meter
+            : new Meter(meterName ?? "EfCore.Interceptors", version ?? "1.0.0");
         _durationMs = _meter.CreateHistogram<double>("ef.command.duration", unit: "ms");
         _executed = _meter.CreateCounter<long>("ef.command.executed");
         _failed = _meter.CreateCounter<long>("ef.command.failed");

@@ -32,5 +32,7 @@ public class ModelFiltersInterceptor : IInterceptor
         if (_enableTenant && _tenantProvider is not null) modelBuilder.ApplyTenantFilters(_tenantProvider);
     }
 
-    // Kept for future EF Core IModelFinalizingInterceptor support - not required for build on current TF.
+    // NOTE: EF Core 10 does not expose a stable IModelFinalizingInterceptor for global filters.
+    // Filters must be applied via ApplyTo(modelBuilder) in OnModelCreating. This interceptor is kept
+    // for DI discovery via WithModelFilters() and to avoid dead-code warnings.
 }

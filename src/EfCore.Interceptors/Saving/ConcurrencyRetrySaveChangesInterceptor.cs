@@ -1,4 +1,4 @@
-using System.Collections.Concurrent;
+using System.Runtime.CompilerServices;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
 
@@ -33,8 +33,12 @@ public class ConcurrencyRetrySaveChangesInterceptor(
     TimeSpan? initialDelay = null,
     Action<int, TimeSpan>? onRetry = null) : SaveChangesInterceptor
 {
-    private readonly ConcurrentDictionary<DbContext, int> _attempts = new();
-    private readonly ConcurrentDictionary<DbContext, bool> _retrying = new();
+    private readonly ConditionalWeakTable<DbContext, RetryState> _state = new();
+    private sealed class RetryState
+    {
+        public int Attempts;
+        public bool Retrying;
+    }
 
     private readonly ConcurrencyRetryPolicy _policy = policy;
     private readonly int _maxRetries = Math.Max(0, maxRetries);
@@ -74,11 +78,14 @@ public class ConcurrencyRetrySaveChangesInterceptor(
         return base.SavedChangesAsync(eventData, result, cancellationToken);
     }
 
+    private RetryState GetState(DbContext context)
+        => _state.GetOrCreateValue(context);
+
     private void ResetBudget(DbContext? context)
     {
         if (context is { } c && !IsNested(c))
         {
-            _attempts[c] = 0;
+            GetState(c).Attempts = 0;
         }
     }
 
@@ -86,13 +93,12 @@ public class ConcurrencyRetrySaveChangesInterceptor(
     {
         if (context is { } c)
         {
-            _attempts.TryRemove(c, out _);
-            _retrying.TryRemove(c, out _);
+            _state.Remove(c);
         }
     }
 
     private bool IsNested(DbContext context)
-        => _retrying.TryGetValue(context, out var retrying) && retrying;
+        => _state.TryGetValue(context, out var s) && s.Retrying;
 
     // ---- conflict interception -----------------------------------------------------------
 
@@ -105,7 +111,7 @@ public class ConcurrencyRetrySaveChangesInterceptor(
         }
 
         DbUpdateConcurrencyException? failure = eventData.Exception;
-        _attempts[context] = 0;
+        GetState(context).Attempts = 0;
 
         for (var retry = 1; retry <= _maxRetries; retry++)
         {
@@ -128,7 +134,7 @@ public class ConcurrencyRetrySaveChangesInterceptor(
 
             Reconcile(failure);
 
-            _retrying[context] = true;
+            GetState(context).Retrying = true;
             try
             {
                 context.SaveChanges();
@@ -141,12 +147,11 @@ public class ConcurrencyRetrySaveChangesInterceptor(
             }
             finally
             {
-                _retrying[context] = false;
+                if (_state.TryGetValue(context, out var st)) st.Retrying = false;
             }
         }
 
-        _attempts.TryRemove(context, out _);
-        _retrying.TryRemove(context, out _);
+        _state.Remove(context);
 
         // Budget spent: let EF raise the last conflict as usual.
         return base.ThrowingConcurrencyException(eventData, result);
@@ -169,7 +174,7 @@ public class ConcurrencyRetrySaveChangesInterceptor(
         }
 
         DbUpdateConcurrencyException? failure = eventData.Exception;
-        _attempts[context] = 0;
+        GetState(context).Attempts = 0;
 
         for (var retry = 1; retry <= _maxRetries; retry++)
         {
@@ -191,7 +196,7 @@ public class ConcurrencyRetrySaveChangesInterceptor(
 
             Reconcile(failure);
 
-            _retrying[context] = true;
+            GetState(context).Retrying = true;
             try
             {
                 await context.SaveChangesAsync(cancellationToken);
@@ -204,12 +209,11 @@ public class ConcurrencyRetrySaveChangesInterceptor(
             }
             finally
             {
-                _retrying[context] = false;
+                if (_state.TryGetValue(context, out var st)) st.Retrying = false;
             }
         }
 
-        _attempts.TryRemove(context, out _);
-        _retrying.TryRemove(context, out _);
+        _state.Remove(context);
 
         return await base.ThrowingConcurrencyExceptionAsync(eventData, result, cancellationToken);
     }
@@ -240,5 +244,11 @@ public class ConcurrencyRetrySaveChangesInterceptor(
     }
 
     private TimeSpan BackoffDelay(int retryNumber)
-        => TimeSpan.FromMilliseconds(_initialDelay.TotalMilliseconds * Math.Pow(2, retryNumber - 1));
+    {
+        var ms = _initialDelay.TotalMilliseconds * Math.Pow(2, retryNumber - 1);
+        // Cap at 5s and add jitter would require Random; keep deterministic but bounded
+        ms = Math.Min(ms, 5000);
+        if (double.IsInfinity(ms) || ms > TimeSpan.MaxValue.TotalMilliseconds) ms = 5000;
+        return TimeSpan.FromMilliseconds(ms);
+    }
 }

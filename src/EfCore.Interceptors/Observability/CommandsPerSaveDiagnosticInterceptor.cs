@@ -1,5 +1,5 @@
-using System.Collections.Concurrent;
 using System.Data.Common;
+using System.Runtime.CompilerServices;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.Logging;
@@ -20,7 +20,8 @@ public class CommandsPerSaveDiagnosticInterceptor(
     private readonly int _warnAbove = warnAbove;
     private readonly ILogger _logger =
         loggerFactory?.CreateLogger("EfCore.Interceptors.CommandsPerSave") ?? NullLogger.Instance;
-    private readonly ConcurrentDictionary<DbContext, int> _commands = new();
+    private readonly ConditionalWeakTable<DbContext, CounterHolder> _commands = new();
+    private sealed class CounterHolder { public int Count; }
 
     // ---- save boundaries ----
 
@@ -122,25 +123,28 @@ public class CommandsPerSaveDiagnosticInterceptor(
     {
         if (context is not null)
         {
-            _commands[context] = 0;
+            _commands.Remove(context);
+            _commands.Add(context, new CounterHolder());
         }
     }
 
     private void Count(DbContext? context)
     {
-        if (context is not null)
+        if (context is not null && _commands.TryGetValue(context, out var holder))
         {
-            _commands.AddOrUpdate(context, 1, (_, existing) => existing + 1);
+            holder.Count++;
         }
     }
 
     protected virtual void Report(DbContext? context)
     {
-        if (context is null || !_commands.TryRemove(context, out var count))
+        if (context is null || !_commands.TryGetValue(context, out var holder))
         {
             return;
         }
 
+        _commands.Remove(context);
+        var count = holder.Count;
         if (count > _warnAbove)
         {
             _logger.LogWarning(

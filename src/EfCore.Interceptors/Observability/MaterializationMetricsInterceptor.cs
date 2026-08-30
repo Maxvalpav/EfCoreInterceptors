@@ -10,13 +10,10 @@ namespace EfCore.Interceptors.Observability;
 /// </summary>
 public class MaterializationMetricsInterceptor : IMaterializationInterceptor
 {
-    private const string MeterName = "EfCore.Interceptors";
+    private static readonly Counter<long> StaticEntities = SharedMeter.Meter.CreateCounter<long>("ef.materialization.entities");
+    private readonly Counter<long> _entities = StaticEntities;
 
-    private readonly Meter _meter = new(MeterName, "1.0.0");
-    private readonly Counter<long> _entities;
-
-    public MaterializationMetricsInterceptor()
-        => _entities = _meter.CreateCounter<long>("ef.materialization.entities");
+    public MaterializationMetricsInterceptor() { }
 
     public object InitializedInstance(MaterializationInterceptionData materializationData, object entity)
     {

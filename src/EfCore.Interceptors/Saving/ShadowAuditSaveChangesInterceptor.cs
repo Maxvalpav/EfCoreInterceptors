@@ -29,6 +29,8 @@ public class ShadowAuditSaveChangesInterceptor(
         return base.SavingChangesAsync(eventData, result, cancellationToken);
     }
 
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<Microsoft.EntityFrameworkCore.Metadata.IEntityType, (bool HasCreatedAt, bool HasCreatedBy, bool HasUpdatedAt, bool HasUpdatedBy)> _cache = new();
+
     protected virtual void Apply(DbContext? context)
     {
         if (context is null) return;
@@ -36,25 +38,43 @@ public class ShadowAuditSaveChangesInterceptor(
         var user = _users.UserName;
         foreach (var entry in context.ChangeTracker.Entries())
         {
-            var hasCreatedAt = entry.Metadata.FindProperty("CreatedAtUtc") is not null;
-            var hasUpdatedAt = entry.Metadata.FindProperty("UpdatedAtUtc") is not null;
-            if (!hasCreatedAt && !hasUpdatedAt) continue;
+            if (entry.State is not (EntityState.Added or EntityState.Modified)) continue;
+
+            var flags = _cache.GetOrAdd(entry.Metadata, static et => (
+                HasCreatedAt: et.FindProperty("CreatedAtUtc") is not null,
+                HasCreatedBy: et.FindProperty("CreatedBy") is not null,
+                HasUpdatedAt: et.FindProperty("UpdatedAtUtc") is not null,
+                HasUpdatedBy: et.FindProperty("UpdatedBy") is not null));
+
+            if (!flags.HasCreatedAt && !flags.HasCreatedBy && !flags.HasUpdatedAt && !flags.HasUpdatedBy) continue;
 
             switch (entry.State)
             {
                 case EntityState.Added:
-                    if (hasCreatedAt) entry.Property("CreatedAtUtc").CurrentValue = now;
-                    if (entry.Metadata.FindProperty("CreatedBy") is not null) entry.Property("CreatedBy").CurrentValue = user;
-                    if (hasUpdatedAt) entry.Property("UpdatedAtUtc").CurrentValue = now;
-                    if (entry.Metadata.FindProperty("UpdatedBy") is not null) entry.Property("UpdatedBy").CurrentValue = user;
+                    if (flags.HasCreatedAt) SetShadowValue(entry, "CreatedAtUtc", now);
+                    if (flags.HasCreatedBy) entry.Property("CreatedBy").CurrentValue = user;
+                    if (flags.HasUpdatedAt) SetShadowValue(entry, "UpdatedAtUtc", now);
+                    if (flags.HasUpdatedBy) entry.Property("UpdatedBy").CurrentValue = user;
                     break;
                 case EntityState.Modified:
-                    if (hasUpdatedAt) entry.Property("UpdatedAtUtc").CurrentValue = now;
-                    if (entry.Metadata.FindProperty("UpdatedBy") is not null) entry.Property("UpdatedBy").CurrentValue = user;
-                    if (hasCreatedAt) entry.Property("CreatedAtUtc").IsModified = false;
-                    if (entry.Metadata.FindProperty("CreatedBy") is not null) entry.Property("CreatedBy").IsModified = false;
+                    if (flags.HasUpdatedAt) SetShadowValue(entry, "UpdatedAtUtc", now);
+                    if (flags.HasUpdatedBy) entry.Property("UpdatedBy").CurrentValue = user;
+                    if (flags.HasCreatedAt) entry.Property("CreatedAtUtc").IsModified = false;
+                    if (flags.HasCreatedBy) entry.Property("CreatedBy").IsModified = false;
                     break;
             }
         }
+    }
+
+    private static void SetShadowValue(Microsoft.EntityFrameworkCore.ChangeTracking.EntityEntry entry, string propertyName, DateTimeOffset value)
+    {
+        var prop = entry.Metadata.FindProperty(propertyName);
+        if (prop is null) return;
+        var clrType = prop.ClrType;
+        object? converted = clrType == typeof(DateTimeOffset) ? value
+            : clrType == typeof(DateTime) ? value.UtcDateTime
+            : clrType == typeof(string) ? value.ToString("O")
+            : Convert.ChangeType(value, clrType, System.Globalization.CultureInfo.InvariantCulture);
+        entry.Property(propertyName).CurrentValue = converted;
     }
 }

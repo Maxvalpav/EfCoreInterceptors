@@ -22,12 +22,13 @@ public class SessionInitConnectionInterceptor : DbConnectionInterceptor
     private readonly Func<DbContext?, IEnumerable<string>> _statementResolver;
     private readonly ILogger _logger;
 
-    /// <summary>Static statement list — same for every connection.</summary>
+    /// <summary>Static statement list — same for every connection (snapshot).</summary>
     public SessionInitConnectionInterceptor(
         IEnumerable<string> statements,
         ILoggerFactory? loggerFactory = null)
-        : this(_ => statements, loggerFactory)
+        : this(_ => statements?.ToArray() ?? Array.Empty<string>(), loggerFactory)
     {
+        ArgumentNullException.ThrowIfNull(statements);
     }
 
     /// <summary>
@@ -60,22 +61,42 @@ public class SessionInitConnectionInterceptor : DbConnectionInterceptor
 
     protected virtual void RunStatements(DbContext? context, DbConnection connection)
     {
-        foreach (var statement in ResolveStatements(context))
+        var statements = ResolveStatements(context) ?? Array.Empty<string>();
+        foreach (var statement in statements)
         {
-            using var command = connection.CreateCommand();
-            command.CommandText = statement;
-            command.ExecuteNonQuery();
+            if (string.IsNullOrWhiteSpace(statement)) continue;
+            try
+            {
+                using var command = connection.CreateCommand();
+                command.CommandText = statement;
+                command.ExecuteNonQuery();
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Session init statement failed: {Statement}", statement);
+                throw new InvalidOperationException($"Session init failed for statement: {statement}", ex);
+            }
         }
     }
 
     protected virtual async Task RunStatementsAsync(
         DbContext? context, DbConnection connection, CancellationToken cancellationToken)
     {
-        foreach (var statement in ResolveStatements(context))
+        var statements = ResolveStatements(context) ?? Array.Empty<string>();
+        foreach (var statement in statements)
         {
-            using var command = connection.CreateCommand();
-            command.CommandText = statement;
-            await command.ExecuteNonQueryAsync(cancellationToken);
+            if (string.IsNullOrWhiteSpace(statement)) continue;
+            try
+            {
+                using var command = connection.CreateCommand();
+                command.CommandText = statement;
+                await command.ExecuteNonQueryAsync(cancellationToken);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Session init statement failed: {Statement}", statement);
+                throw new InvalidOperationException($"Session init failed for statement: {statement}", ex);
+            }
         }
     }
 }

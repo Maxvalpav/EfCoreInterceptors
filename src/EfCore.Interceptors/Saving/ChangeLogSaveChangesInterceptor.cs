@@ -25,6 +25,7 @@ public class ChangeLogSaveChangesInterceptor(
 
     private readonly TimeProvider _clock = clock ?? TimeProvider.System;
     private readonly ICurrentUserProvider _users = currentUserProvider ?? StaticCurrentUserProvider.System;
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<DbContext, List<(EntityEntry Source, ChangeLogEntry Log)>> _pendingKeys = new();
 
     public override InterceptionResult<int> SavingChanges(
         DbContextEventData eventData, InterceptionResult<int> result)
@@ -49,9 +50,25 @@ public class ChangeLogSaveChangesInterceptor(
             return;
         }
 
+        if (context.Model.FindEntityType(typeof(ChangeLogEntry)) is null)
+        {
+            // Fail fast before building diffs
+            var hasAny = context.ChangeTracker.Entries()
+                .Any(e => e.State is EntityState.Added or EntityState.Modified or EntityState.Deleted
+                    && e.Entity is not ChangeLogEntry and not OutboxMessage);
+            if (hasAny)
+            {
+                throw new InvalidOperationException(
+                    "ChangeLogEntry is not mapped. Call modelBuilder.Entity<ChangeLogEntry>() in OnModelCreating.");
+            }
+
+            return;
+        }
+
         var now = _clock.GetUtcNow();
         var actor = _users.UserName;
         List<ChangeLogEntry>? logEntries = null;
+        List<(EntityEntry Source, ChangeLogEntry Log)>? pendingAdded = null;
 
         foreach (var entry in context.ChangeTracker.Entries())
         {
@@ -68,7 +85,7 @@ public class ChangeLogSaveChangesInterceptor(
             }
 
             logEntries ??= [];
-            logEntries.Add(new ChangeLogEntry
+            var log = new ChangeLogEntry
             {
                 EntityName = entry.Metadata.ClrType.Name,
                 EntityKey = SerializeKey(entry),
@@ -76,18 +93,57 @@ public class ChangeLogSaveChangesInterceptor(
                 ChangesJson = JsonSerializer.Serialize(changes, JsonOptions),
                 Actor = actor,
                 TimestampUtc = now
-            });
+            };
+            logEntries.Add(log);
+
+            if (entry.State == EntityState.Added)
+            {
+                pendingAdded ??= [];
+                pendingAdded.Add((entry, log));
+            }
         }
 
         if (logEntries is not null)
         {
-            if (context.Model.FindEntityType(typeof(ChangeLogEntry)) is null)
-            {
-                throw new InvalidOperationException(
-                    "ChangeLogEntry is not mapped. Call modelBuilder.Entity<ChangeLogEntry>() in OnModelCreating.");
-            }
-
             context.Set<ChangeLogEntry>().AddRange(logEntries);
+            if (pendingAdded is not null && pendingAdded.Count > 0)
+            {
+                _pendingKeys[context] = pendingAdded;
+            }
+        }
+    }
+
+    public override int SavedChanges(SaveChangesCompletedEventData eventData, int result)
+    {
+        PatchKeys(eventData.Context);
+        return base.SavedChanges(eventData, result);
+    }
+
+    public override ValueTask<int> SavedChangesAsync(SaveChangesCompletedEventData eventData, int result, CancellationToken cancellationToken = default)
+    {
+        PatchKeys(eventData.Context);
+        return base.SavedChangesAsync(eventData, result, cancellationToken);
+    }
+
+    public override void SaveChangesFailed(DbContextErrorEventData eventData)
+    {
+        if (eventData.Context is not null) _pendingKeys.TryRemove(eventData.Context, out _);
+        base.SaveChangesFailed(eventData);
+    }
+
+    public override Task SaveChangesFailedAsync(DbContextErrorEventData eventData, CancellationToken cancellationToken = default)
+    {
+        if (eventData.Context is not null) _pendingKeys.TryRemove(eventData.Context, out _);
+        return base.SaveChangesFailedAsync(eventData, cancellationToken);
+    }
+
+    private void PatchKeys(DbContext? context)
+    {
+        if (context is null || !_pendingKeys.TryRemove(context, out var pending)) return;
+        foreach (var (source, log) in pending)
+        {
+            // Re-serialize key after DB generated values (identity)
+            log.EntityKey = SerializeKey(source);
         }
     }
 
@@ -103,8 +159,12 @@ public class ChangeLogSaveChangesInterceptor(
             .ToList();
 
     private static string SerializeKey(EntityEntry entry)
-        => JsonSerializer.Serialize(
-            entry.Metadata.FindPrimaryKey()!.Properties
+    {
+        var pk = entry.Metadata.FindPrimaryKey();
+        if (pk is null) return "{}";
+        return JsonSerializer.Serialize(
+            pk.Properties
                 .ToDictionary(p => p.Name, p => entry.Property(p.Name).CurrentValue),
             JsonOptions);
+    }
 }

@@ -9,18 +9,30 @@ namespace EfCore.Interceptors.Abstractions;
 /// Less secure than random nonce (reveals equality), but enables WHERE EncryptedEmail = @p.
 /// For non-searchable PII keep using <see cref="AesGcmPropertyValueEncryptor"/>.
 /// </summary>
-public sealed class DeterministicAesGcmEncryptor(string base64Key) : IPropertyValueEncryptor
+public sealed class DeterministicAesGcmEncryptor : IPropertyValueEncryptor
 {
-    private readonly byte[] _key = Convert.FromBase64String(base64Key);
+    private readonly byte[] _key;
+
+    public DeterministicAesGcmEncryptor(string base64Key)
+    {
+        _key = Convert.FromBase64String(base64Key);
+        if (_key.Length != 32)
+        {
+            throw new ArgumentException("AES-256 key must be 32 bytes.", nameof(base64Key));
+        }
+    }
 
     public string? Encrypt(string? plaintext)
     {
         if (plaintext is null) return null;
         var nonce = DeriveNonce(plaintext);
         var tag = new byte[16];
-        var cipher = new byte[Encoding.UTF8.GetByteCount(plaintext)];
+        var plainBytes = Encoding.UTF8.GetBytes(plaintext);
+        var cipher = new byte[plainBytes.Length];
+#pragma warning disable SYSLIB0053
         using var aes = new AesGcm(_key, 16);
-        aes.Encrypt(nonce, Encoding.UTF8.GetBytes(plaintext), cipher, tag);
+        aes.Encrypt(nonce, plainBytes, cipher, tag);
+#pragma warning restore SYSLIB0053
         var payload = new byte[nonce.Length + cipher.Length + tag.Length];
         Buffer.BlockCopy(nonce, 0, payload, 0, nonce.Length);
         Buffer.BlockCopy(cipher, 0, payload, nonce.Length, cipher.Length);
@@ -42,14 +54,18 @@ public sealed class DeterministicAesGcmEncryptor(string base64Key) : IPropertyVa
         Buffer.BlockCopy(payload, nonceLen, cipher, 0, cipherLen);
         Buffer.BlockCopy(payload, nonceLen + cipherLen, tag, 0, tagLen);
         var plain = new byte[cipherLen];
+#pragma warning disable SYSLIB0053
         using var aes = new AesGcm(_key, 16);
         aes.Decrypt(nonce, cipher, tag, plain);
+#pragma warning restore SYSLIB0053
         return Encoding.UTF8.GetString(plain);
     }
 
-    private static byte[] DeriveNonce(string plaintext)
+    private byte[] DeriveNonce(string plaintext)
     {
-        var hash = SHA256.HashData(Encoding.UTF8.GetBytes(plaintext));
+        // HMAC with key instead of plain SHA256 - prevents dictionary attack without key
+        using var hmac = new HMACSHA256(_key);
+        var hash = hmac.ComputeHash(Encoding.UTF8.GetBytes(plaintext));
         var nonce = new byte[12];
         Buffer.BlockCopy(hash, 0, nonce, 0, 12);
         return nonce;

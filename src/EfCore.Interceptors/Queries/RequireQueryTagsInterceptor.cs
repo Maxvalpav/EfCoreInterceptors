@@ -66,22 +66,59 @@ public class RequireQueryTagsInterceptor : IQueryExpressionInterceptor
                         continue;
                     }
 
-                    try
+                    if (TryExtractString(argument, out var value) && !string.IsNullOrEmpty(value))
                     {
-                        var value = Expression.Lambda<Func<string>>(argument).Compile()();
-                        if (!string.IsNullOrEmpty(value))
-                        {
-                            Tags.Add(value);
-                        }
-                    }
-                    catch
-                    {
-                        // Non-constant tag expressions are ignored for enforcement purposes.
+                        Tags.Add(value);
                     }
                 }
             }
 
             return base.VisitMethodCall(node);
+        }
+
+        private static bool TryExtractString(Expression expr, out string value)
+        {
+            if (expr is ConstantExpression ce && ce.Value is string s)
+            {
+                value = s;
+                return true;
+            }
+
+            // For member access of closure constant, evaluate without Compile() overhead
+            // by extracting constant value directly if possible
+            if (expr is MemberExpression me && me.Expression is ConstantExpression closure)
+            {
+                try
+                {
+                    var field = me.Member as System.Reflection.FieldInfo;
+                    if (field != null)
+                    {
+                        value = field.GetValue(closure.Value) as string ?? string.Empty;
+                        return !string.IsNullOrEmpty(value);
+                    }
+
+                    var prop = me.Member as System.Reflection.PropertyInfo;
+                    if (prop != null)
+                    {
+                        value = prop.GetValue(closure.Value) as string ?? string.Empty;
+                        return !string.IsNullOrEmpty(value);
+                    }
+                }
+                catch { }
+            }
+
+            try
+            {
+                // Fallback: interpret without JIT
+                var lambda = Expression.Lambda<Func<string>>(Expression.Convert(expr, typeof(string)));
+                value = lambda.Compile(preferInterpretation: true)();
+                return !string.IsNullOrEmpty(value);
+            }
+            catch
+            {
+                value = string.Empty;
+                return false;
+            }
         }
     }
 }

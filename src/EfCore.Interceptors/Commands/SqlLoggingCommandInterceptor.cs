@@ -24,7 +24,7 @@ public class SqlLoggingCommandInterceptor(
         loggerFactory?.CreateLogger("EfCore.Interceptors.Sql") ?? NullLogger.Instance;
     private readonly bool _includeParameterValues = includeParameterValues;
     private readonly Func<string, string>? _redactor = textRedactor;
-    private readonly double _sampleRate = Math.Clamp(sampleRate, 0.000001, 1.0);
+    private readonly double _sampleRate = Math.Clamp(sampleRate, 0.0, 1.0);
 
     public override InterceptionResult<DbDataReader> ReaderExecuting(
         DbCommand command, CommandEventData eventData, InterceptionResult<DbDataReader> result)
@@ -101,7 +101,9 @@ public class SqlLoggingCommandInterceptor(
         DbCommand command, CommandErrorEventData eventData,
         CancellationToken cancellationToken = default)
     {
-        CommandFailed(command, eventData);
+        _logger.LogError(eventData.Exception,
+            "EF command FAILED after {Duration:F1}ms. Sql: {Sql}{Parameters}",
+            eventData.Duration.TotalMilliseconds, Safe(command.CommandText), Safe(FormatParameters(command)));
         return base.CommandFailedAsync(command, eventData, cancellationToken);
     }
 
@@ -117,20 +119,22 @@ public class SqlLoggingCommandInterceptor(
         DbCommand command, CommandEndEventData eventData,
         CancellationToken cancellationToken = default)
     {
-        CommandCanceled(command, eventData);
+        _logger.LogInformation(
+            "EF command CANCELLED after {Duration:F1}ms. Sql: {Sql}",
+            eventData.Duration.TotalMilliseconds, Safe(command.CommandText));
         return base.CommandCanceledAsync(command, eventData, cancellationToken);
     }
 
     private void LogExecuting(DbCommand command, CommandEventData eventData)
     {
-        if (!ShouldSample()) return;
+        if (!_logger.IsEnabled(LogLevel.Debug) || !ShouldSample()) return;
         _logger.LogDebug("EF {Method} executing... Sql: {Sql}{Parameters}",
             eventData.ExecuteMethod, Safe(command.CommandText), Safe(FormatParameters(command)));
     }
 
     private void LogExecuted(TimeSpan duration, DbCommand command, string? outcome = null)
     {
-        if (!ShouldSample()) return;
+        if (!_logger.IsEnabled(LogLevel.Information) || !ShouldSample()) return;
         _logger.LogInformation("EF command executed in {Duration:F1}ms{Outcome}. Sql: {Sql}",
             duration.TotalMilliseconds,
             outcome is null ? string.Empty : $" ({outcome})",
@@ -166,7 +170,18 @@ public class SqlLoggingCommandInterceptor(
             sb.Append(parameter.ParameterName);
             if (_includeParameterValues)
             {
-                sb.Append('=').Append(parameter.Value == DBNull.Value ? "NULL" : parameter.Value);
+                var val = parameter.Value;
+                string display;
+                if (val is null or DBNull) display = "NULL";
+                else if (val is byte[] bytes) display = $"[bytes:{bytes.Length}]";
+                else
+                {
+                    var s = Convert.ToString(val, System.Globalization.CultureInfo.InvariantCulture) ?? string.Empty;
+                    if (s.Length > 256) s = s[..256] + "...";
+                    display = s;
+                }
+
+                sb.Append('=').Append(Safe(display));
             }
         }
 

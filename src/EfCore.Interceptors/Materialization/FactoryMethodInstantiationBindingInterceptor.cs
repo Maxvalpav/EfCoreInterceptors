@@ -26,7 +26,7 @@ public class FactoryMethodInstantiationBindingInterceptor(
         InstantiationBinding binding)
     {
         var clrType = interceptionData.TypeBase.ClrType;
-        if (!_factories.ContainsKey(clrType))
+        if (!_factories.TryGetValue(clrType, out _))
         {
             return binding;
         }
@@ -36,7 +36,7 @@ public class FactoryMethodInstantiationBindingInterceptor(
                 .GetMethod(nameof(CreateInstance), BindingFlags.Instance | BindingFlags.NonPublic)!
                 .MakeGenericMethod(t));
 
-        return new FactoryMethodBinding(this, createMethod, [], clrType);
+        return new FactoryMethodBinding(this, createMethod, binding.ParameterBindings);
     }
 
     // Invoked by EF through the FactoryMethodBinding created above.
@@ -46,4 +46,38 @@ public class FactoryMethodInstantiationBindingInterceptor(
         ?? throw new InvalidOperationException(
             $"Factory for '{typeof(T).Name}' returned an incompatible instance.");
 #pragma warning restore IDE0051
+
+    /// <summary>
+    /// EF10-compatible binding that delegates instance creation to a factory method.
+    /// Overrides CreateConstructorExpression to emit a call to the factory instead of a constructor.
+    /// </summary>
+    private sealed class FactoryMethodBinding : InstantiationBinding
+    {
+        private readonly FactoryMethodInstantiationBindingInterceptor _interceptor;
+        private readonly MethodInfo _createMethod;
+        private readonly Type _runtimeType;
+
+        public FactoryMethodBinding(
+            FactoryMethodInstantiationBindingInterceptor interceptor,
+            MethodInfo createMethod,
+            IReadOnlyList<ParameterBinding> parameterBindings)
+            : base(parameterBindings)
+        {
+            _interceptor = interceptor;
+            _createMethod = createMethod;
+            _runtimeType = createMethod.ReturnType;
+        }
+
+        public override Type RuntimeType => _runtimeType;
+
+        public override InstantiationBinding With(IReadOnlyList<ParameterBinding> parameterBindings)
+            => new FactoryMethodBinding(_interceptor, _createMethod, parameterBindings);
+
+        public override Expression CreateConstructorExpression(ParameterBindingInfo bindingInfo)
+        {
+            // Factory has no parameters; ignore bindingInfo and just call the factory.
+            // EF will then apply property bindings on top of the created instance.
+            return Expression.Call(Expression.Constant(_interceptor), _createMethod);
+        }
+    }
 }

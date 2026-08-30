@@ -16,18 +16,15 @@ public class ForcedIsolationLevelTransactionInterceptor(IsolationLevel isolation
 
     public override InterceptionResult<DbTransaction> TransactionStarting(
         DbConnection connection, TransactionStartingEventData eventData, InterceptionResult<DbTransaction> result)
-        => StartForced(connection);
+        => result.HasResult ? result : StartForced(connection);
 
     public override async ValueTask<InterceptionResult<DbTransaction>> TransactionStartingAsync(
         DbConnection connection, TransactionStartingEventData eventData, InterceptionResult<DbTransaction> result,
         CancellationToken cancellationToken = default)
     {
-#if NET8_0_OR_GREATER
+        if (result.HasResult) return result;
         var transaction = await connection.BeginTransactionAsync(_isolationLevel, cancellationToken);
         return InterceptionResult<DbTransaction>.SuppressWithResult(transaction);
-#else
-        return StartForced(connection);
-#endif
     }
 
     private InterceptionResult<DbTransaction> StartForced(DbConnection connection)

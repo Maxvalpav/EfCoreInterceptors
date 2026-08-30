@@ -10,23 +10,19 @@ namespace EfCore.Interceptors.Observability;
 /// </summary>
 public class TransactionMetricsInterceptor : DbTransactionInterceptor
 {
-    private const string MeterName = "EfCore.Interceptors";
+    private static readonly Counter<long> StaticStarted = SharedMeter.Meter.CreateCounter<long>("ef.transaction.started");
+    private static readonly Counter<long> StaticCommitted = SharedMeter.Meter.CreateCounter<long>("ef.transaction.committed");
+    private static readonly Counter<long> StaticRolledBack = SharedMeter.Meter.CreateCounter<long>("ef.transaction.rolledback");
+    private static readonly Counter<long> StaticFailed = SharedMeter.Meter.CreateCounter<long>("ef.transaction.failed");
+    private static readonly Histogram<double> StaticDuration = SharedMeter.Meter.CreateHistogram<double>("ef.transaction.duration", unit: "ms");
 
-    private readonly Meter _meter = new(MeterName, "1.0.0");
-    private readonly Counter<long> _started;
-    private readonly Counter<long> _committed;
-    private readonly Counter<long> _rolledBack;
-    private readonly Counter<long> _failed;
-    private readonly Histogram<double> _durationMs;
+    private readonly Counter<long> _started = StaticStarted;
+    private readonly Counter<long> _committed = StaticCommitted;
+    private readonly Counter<long> _rolledBack = StaticRolledBack;
+    private readonly Counter<long> _failed = StaticFailed;
+    private readonly Histogram<double> _durationMs = StaticDuration;
 
-    public TransactionMetricsInterceptor()
-    {
-        _started = _meter.CreateCounter<long>("ef.transaction.started");
-        _committed = _meter.CreateCounter<long>("ef.transaction.committed");
-        _rolledBack = _meter.CreateCounter<long>("ef.transaction.rolledback");
-        _failed = _meter.CreateCounter<long>("ef.transaction.failed");
-        _durationMs = _meter.CreateHistogram<double>("ef.transaction.duration", unit: "ms");
-    }
+    public TransactionMetricsInterceptor() { }
 
     public override DbTransaction TransactionStarted(
         DbConnection connection, TransactionEndEventData eventData, DbTransaction result)

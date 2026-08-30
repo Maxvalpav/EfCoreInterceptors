@@ -10,21 +10,17 @@ namespace EfCore.Interceptors.Observability;
 /// </summary>
 public class ConnectionMetricsInterceptor : DbConnectionInterceptor
 {
-    private const string MeterName = "EfCore.Interceptors";
+    private static readonly Counter<long> StaticOpened = SharedMeter.Meter.CreateCounter<long>("ef.connection.opened");
+    private static readonly Counter<long> StaticClosed = SharedMeter.Meter.CreateCounter<long>("ef.connection.closed");
+    private static readonly Counter<long> StaticFailed = SharedMeter.Meter.CreateCounter<long>("ef.connection.failed");
+    private static readonly Histogram<double> StaticDuration = SharedMeter.Meter.CreateHistogram<double>("ef.connection.open_duration", unit: "ms");
 
-    private readonly Meter _meter = new(MeterName, "1.0.0");
-    private readonly Counter<long> _opened;
-    private readonly Counter<long> _closed;
-    private readonly Counter<long> _failed;
-    private readonly Histogram<double> _openDurationMs;
+    private readonly Counter<long> _opened = StaticOpened;
+    private readonly Counter<long> _closed = StaticClosed;
+    private readonly Counter<long> _failed = StaticFailed;
+    private readonly Histogram<double> _openDurationMs = StaticDuration;
 
-    public ConnectionMetricsInterceptor()
-    {
-        _opened = _meter.CreateCounter<long>("ef.connection.opened");
-        _closed = _meter.CreateCounter<long>("ef.connection.closed");
-        _failed = _meter.CreateCounter<long>("ef.connection.failed");
-        _openDurationMs = _meter.CreateHistogram<double>("ef.connection.open_duration", unit: "ms");
-    }
+    public ConnectionMetricsInterceptor() { }
 
     public override void ConnectionOpened(DbConnection connection, ConnectionEndEventData eventData)
     {

@@ -1,6 +1,6 @@
-using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Diagnostics.Metrics;
+using System.Runtime.CompilerServices;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
 
@@ -12,22 +12,17 @@ namespace EfCore.Interceptors.Observability;
 /// </summary>
 public class SaveChangesMetricsInterceptor : SaveChangesInterceptor
 {
-    private const string MeterName = "EfCore.Interceptors";
+    private static readonly Histogram<double> StaticDuration = SharedMeter.Meter.CreateHistogram<double>("ef.save.duration", unit: "ms");
+    private static readonly Counter<long> StaticExecuted = SharedMeter.Meter.CreateCounter<long>("ef.save.executed");
+    private static readonly Counter<long> StaticFailed = SharedMeter.Meter.CreateCounter<long>("ef.save.failed");
+    private static readonly Counter<long> StaticEntities = SharedMeter.Meter.CreateCounter<long>("ef.save.entities");
 
-    private readonly Meter _meter = new(MeterName, "1.0.0");
-    private readonly Histogram<double> _durationMs;
-    private readonly Counter<long> _executed;
-    private readonly Counter<long> _failed;
-    private readonly Counter<long> _entities;
-    private readonly ConcurrentDictionary<DbContext, long> _startedAt = new();
-
-    public SaveChangesMetricsInterceptor()
-    {
-        _durationMs = _meter.CreateHistogram<double>("ef.save.duration", unit: "ms");
-        _executed = _meter.CreateCounter<long>("ef.save.executed");
-        _failed = _meter.CreateCounter<long>("ef.save.failed");
-        _entities = _meter.CreateCounter<long>("ef.save.entities");
-    }
+    private readonly Histogram<double> _durationMs = StaticDuration;
+    private readonly Counter<long> _executed = StaticExecuted;
+    private readonly Counter<long> _failed = StaticFailed;
+    private readonly Counter<long> _entities = StaticEntities;
+    private readonly ConditionalWeakTable<DbContext, TimestampHolder> _startedAt = new();
+    private sealed class TimestampHolder(long timestamp) { public long Timestamp { get; } = timestamp; }
 
     public override InterceptionResult<int> SavingChanges(
         DbContextEventData eventData, InterceptionResult<int> result)
@@ -78,7 +73,8 @@ public class SaveChangesMetricsInterceptor : SaveChangesInterceptor
     {
         if (context is not null)
         {
-            _startedAt[context] = Stopwatch.GetTimestamp();
+            _startedAt.Remove(context);
+            _startedAt.Add(context, new TimestampHolder(Stopwatch.GetTimestamp()));
         }
     }
 
@@ -97,9 +93,10 @@ public class SaveChangesMetricsInterceptor : SaveChangesInterceptor
 
     private void RecordDuration(DbContext? context)
     {
-        if (context is not null && _startedAt.TryRemove(context, out var timestamp))
+        if (context is not null && _startedAt.TryGetValue(context, out var holder))
         {
-            _durationMs.Record(Math.Max(0.01, Stopwatch.GetElapsedTime(timestamp).TotalMilliseconds));
+            _startedAt.Remove(context);
+            _durationMs.Record(Math.Max(0.01, Stopwatch.GetElapsedTime(holder.Timestamp).TotalMilliseconds));
         }
     }
 }
