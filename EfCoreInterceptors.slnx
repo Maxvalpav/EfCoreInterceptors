@@ -1,0 +1,16 @@
+<Solution>
+  <Folder Name="/benchmarks/">
+    <Project Path="benchmarks/EfCore.Interceptors.Benchmarks/EfCore.Interceptors.Benchmarks.csproj" />
+  </Folder>
+  <Folder Name="/samples/">
+    <Project Path="samples/SampleApp/SampleApp.csproj" />
+    <Project Path="samples/WebApiSample/WebApiSample.csproj" />
+  </Folder>
+  <Folder Name="/src/">
+    <Project Path="src/EfCore.Interceptors.MediatR/EfCore.Interceptors.MediatR.csproj" />
+    <Project Path="src/EfCore.Interceptors/EfCore.Interceptors.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/EfCore.Interceptors.Tests/EfCore.Interceptors.Tests.csproj" />
+  </Folder>
+</Solution>

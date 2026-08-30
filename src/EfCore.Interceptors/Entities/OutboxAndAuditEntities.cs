@@ -1,0 +1,50 @@
+using System.Text.Json.Serialization;
+
+namespace EfCore.Interceptors.Entities;
+
+/// <summary>
+/// Persisted audit-trail row describing one entity change (insert/update/delete).
+/// Map it in your model (e.g. <c>modelBuilder.Entity&lt;ChangeLogEntry&gt;();</c>) so
+/// <see cref="Saving.ChangeLogSaveChangesInterceptor"/> can append rows in the same transaction.
+/// </summary>
+public class ChangeLogEntry
+{
+    public long Id { get; set; }
+
+    /// <summary>CLR name of the changed entity type.</summary>
+    public string EntityName { get; set; } = string.Empty;
+
+    /// <summary>Serialized primary key of the changed row.</summary>
+    public string EntityKey { get; set; } = string.Empty;
+
+    /// <summary>Added / Modified / Deleted.</summary>
+    public string Action { get; set; } = string.Empty;
+
+    /// <summary>JSON array of { property, oldValue, newValue } for the changed columns.</summary>
+    public string ChangesJson { get; set; } = "[]";
+
+    /// <summary>Actor resolved via ICurrentUserProvider.</summary>
+    public string? Actor { get; set; }
+
+    public DateTimeOffset TimestampUtc { get; set; }
+}
+
+/// <summary>
+/// Atomic outbox row for an integration/domain event, written in the same transaction as the
+/// business change. A background processor delivers rows and stamps <see cref="ProcessedAtUtc"/>.
+/// Map it in your model (e.g. <c>modelBuilder.Entity&lt;OutboxMessage&gt;();</c>).
+/// </summary>
+public class OutboxMessage
+{
+    public long Id { get; set; }
+
+    /// <summary>Full type name of the event.</summary>
+    public string Type { get; set; } = string.Empty;
+
+    /// <summary>JSON-serialized event payload.</summary>
+    public string PayloadJson { get; set; } = string.Empty;
+
+    public DateTimeOffset OccurredAtUtc { get; set; }
+
+    public DateTimeOffset? ProcessedAtUtc { get; set; }
+}

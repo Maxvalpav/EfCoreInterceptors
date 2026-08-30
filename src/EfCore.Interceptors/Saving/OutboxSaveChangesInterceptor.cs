@@ -1,0 +1,104 @@
+using System.Collections.Concurrent;
+using System.Text.Json;
+using EfCore.Interceptors.Abstractions;
+using EfCore.Interceptors.Entities;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
+
+namespace EfCore.Interceptors.Saving;
+
+/// <summary>
+/// Atomic outbox: drains <see cref="IHasDomainEvents"/> aggregates before saving, serializes each
+/// event into an <see cref="OutboxMessage"/> row inserted in the SAME transaction as the business
+/// change, and clears the aggregates. If the save fails the events are restored to their aggregates.
+/// A background worker (not included) reads OutboxMessages, delivers them and stamps ProcessedAtUtc.
+/// Requirements: <c>modelBuilder.Entity&lt;OutboxMessage&gt;();</c> must be mapped.
+/// </summary>
+public class OutboxSaveChangesInterceptor : SaveChangesInterceptor
+{
+    private static readonly JsonSerializerOptions JsonOptions = new() { WriteIndented = false };
+
+    private readonly ConcurrentDictionary<DbContext, List<(IHasDomainEvents Aggregate, IReadOnlyList<IDomainEvent> Events)>> _pending = new();
+
+    public override InterceptionResult<int> SavingChanges(
+        DbContextEventData eventData, InterceptionResult<int> result)
+    {
+        SnapshotAndQueue(eventData.Context);
+        return base.SavingChanges(eventData, result);
+    }
+
+    public override ValueTask<InterceptionResult<int>> SavingChangesAsync(
+        DbContextEventData eventData,
+        InterceptionResult<int> result,
+        CancellationToken cancellationToken = default)
+    {
+        SnapshotAndQueue(eventData.Context);
+        return base.SavingChangesAsync(eventData, result, cancellationToken);
+    }
+
+    public override int SavedChanges(SaveChangesCompletedEventData eventData, int result)
+        => base.SavedChanges(eventData, result);
+
+    private void SnapshotAndQueue(DbContext? context)
+    {
+        if (context is null)
+        {
+            return;
+        }
+
+        List<(IHasDomainEvents, IReadOnlyList<IDomainEvent>)>? snapshot = null;
+
+        foreach (var aggregate in context.ChangeTracker.Entries<IHasDomainEvents>().Select(e => e.Entity))
+        {
+            if (aggregate.DomainEvents.Count == 0)
+            {
+                continue;
+            }
+
+            snapshot ??= [];
+            snapshot.Add((aggregate, aggregate.DomainEvents.ToArray()));
+        }
+
+        if (snapshot is null)
+        {
+            return;
+        }
+
+        var now = DateTimeOffset.UtcNow;
+
+        foreach (var (aggregate, events) in snapshot)
+        {
+            foreach (var domainEvent in events)
+            {
+                context.Set<OutboxMessage>().Add(new OutboxMessage
+                {
+                    Type = domainEvent.GetType().FullName ?? domainEvent.GetType().Name,
+                    PayloadJson = JsonSerializer.Serialize(domainEvent, domainEvent.GetType(), JsonOptions),
+                    OccurredAtUtc = domainEvent.OccurredAtUtc == default ? now : domainEvent.OccurredAtUtc
+                });
+            }
+
+            // Events are now durably queued in this transaction — safe to clear.
+            aggregate.ClearDomainEvents();
+        }
+
+        _pending[context] = snapshot;
+    }
+
+    public override void SaveChangesFailed(DbContextErrorEventData eventData)
+    {
+        if (eventData.Context is { } context && _pending.TryRemove(context, out var snapshot))
+        {
+            // The outbox rows rolled back with the transaction: put the events back on their aggregates.
+            foreach (var (aggregate, events) in snapshot)
+            {
+                foreach (var domainEvent in events)
+                {
+                    aggregate.AddDomainEvent(domainEvent);
+                }
+            }
+        }
+
+        base.SaveChangesFailed(eventData);
+    }
+}

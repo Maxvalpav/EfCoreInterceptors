@@ -1,0 +1,13 @@
+bin/
+obj/
+*.user
+.vs/
+*.db
+*.db-wal
+*.db-shm
+TestResults/
+artifacts/
+*.nupkg
+*.snupkg
+coverage/
+BenchmarkDotNet.Artifacts/
