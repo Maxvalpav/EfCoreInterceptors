@@ -25,10 +25,12 @@ public class OutboxProcessor<TContext>(
     IServiceScopeFactory scopeFactory,
     TimeSpan? pollInterval = null,
     int batchSize = 20,
-    ILoggerFactory? loggerFactory = null) : BackgroundService where TContext : DbContext
+    ILoggerFactory? loggerFactory = null,
+    TimeProvider? timeProvider = null) : BackgroundService where TContext : DbContext
 {
     private readonly TimeSpan _pollInterval = pollInterval ?? TimeSpan.FromSeconds(2);
     private readonly int _batchSize = Math.Max(1, batchSize);
+    private readonly TimeProvider _timeProvider = timeProvider ?? TimeProvider.System;
     private readonly ILogger _logger =
         loggerFactory?.CreateLogger("EfCore.Interceptors.Outbox") ?? NullLogger.Instance;
 
@@ -91,7 +93,7 @@ public class OutboxProcessor<TContext>(
                 // Atomic stamp: only update if still unprocessed (prevents duplicate delivery)
                 var affected = await db.Set<OutboxMessage>()
                     .Where(m => m.Id == message.Id && m.ProcessedAtUtc == null)
-                    .ExecuteUpdateAsync(s => s.SetProperty(m => m.ProcessedAtUtc, DateTimeOffset.UtcNow), cancellationToken);
+                    .ExecuteUpdateAsync(s => s.SetProperty(m => m.ProcessedAtUtc, _timeProvider.GetUtcNow()), cancellationToken);
 
                 if (affected == 0)
                 {
@@ -125,11 +127,13 @@ public static class OutboxProcessorServiceCollectionExtensions
     public static IServiceCollection AddOutboxProcessor<TContext>(
         this IServiceCollection services,
         TimeSpan? pollInterval = null,
-        int batchSize = 20)
+        int batchSize = 20,
+        TimeProvider? timeProvider = null)
         where TContext : DbContext
         => services.AddHostedService(sp => new OutboxProcessor<TContext>(
             sp.GetRequiredService<IServiceScopeFactory>(),
             pollInterval,
             batchSize,
-            sp.GetService<ILoggerFactory>()));
+            sp.GetService<ILoggerFactory>(),
+            timeProvider ?? sp.GetService<TimeProvider>()));
 }

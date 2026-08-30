@@ -19,8 +19,9 @@ public partial class ConnectionLifecycleLoggingInterceptor(
     public override InterceptionResult ConnectionOpening(
         DbConnection connection, ConnectionEventData eventData, InterceptionResult result)
     {
-        _logger.LogDebug("Opening {Connection} [{ConnectionString}]...",
-            Describe(connection), Mask(connection.ConnectionString));
+        if (_logger.IsEnabled(LogLevel.Debug))
+            _logger.LogDebug("Opening {Connection} [{ConnectionString}]...",
+                Describe(connection), Mask(connection.ConnectionString));
         return base.ConnectionOpening(connection, eventData, result);
     }
 
@@ -28,8 +29,9 @@ public partial class ConnectionLifecycleLoggingInterceptor(
         DbConnection connection, ConnectionEventData eventData, InterceptionResult result,
         CancellationToken cancellationToken = default)
     {
-        _logger.LogDebug("Opening {Connection} [{ConnectionString}]...",
-            Describe(connection), Mask(connection.ConnectionString));
+        if (_logger.IsEnabled(LogLevel.Debug))
+            _logger.LogDebug("Opening {Connection} [{ConnectionString}]...",
+                Describe(connection), Mask(connection.ConnectionString));
         return base.ConnectionOpeningAsync(connection, eventData, result, cancellationToken);
     }
 
@@ -51,14 +53,16 @@ public partial class ConnectionLifecycleLoggingInterceptor(
     public override InterceptionResult ConnectionClosing(
         DbConnection connection, ConnectionEventData eventData, InterceptionResult result)
     {
-        _logger.LogDebug("Closing {Connection}...", Describe(connection));
+        if (_logger.IsEnabled(LogLevel.Debug))
+            _logger.LogDebug("Closing {Connection}...", Describe(connection));
         return base.ConnectionClosing(connection, eventData, result);
     }
 
     public override ValueTask<InterceptionResult> ConnectionClosingAsync(
         DbConnection connection, ConnectionEventData eventData, InterceptionResult result)
     {
-        _logger.LogDebug("Closing {Connection}...", Describe(connection));
+        if (_logger.IsEnabled(LogLevel.Debug))
+            _logger.LogDebug("Closing {Connection}...", Describe(connection));
         return base.ConnectionClosingAsync(connection, eventData, result);
     }
 

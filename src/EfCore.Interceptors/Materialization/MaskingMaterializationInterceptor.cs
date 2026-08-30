@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Reflection;
 using EfCore.Interceptors.Abstractions;
 using Microsoft.EntityFrameworkCore.Diagnostics;
@@ -12,22 +13,28 @@ namespace EfCore.Interceptors.Materialization;
 public class MaskingMaterializationInterceptor(IMaskingPolicy? policy = null) : IMaterializationInterceptor
 {
     private readonly IMaskingPolicy _policy = policy ?? new DefaultMaskingPolicy();
+    private static readonly ConcurrentDictionary<Type, (PropertyInfo Prop, MaskedAttribute Attr)[]> Cache = new();
 
     public object InitializedInstance(MaterializationInterceptionData materializationData, object entity)
     {
-        foreach (var prop in MaskedProps(materializationData.EntityType))
+        var props = Cache.GetOrAdd(materializationData.EntityType.ClrType, static clrType =>
+        {
+            // Build from runtime type to avoid pinning IEntityType/IModel
+            return clrType.GetProperties(BindingFlags.Public | BindingFlags.Instance)
+                .Select(p => (Prop: p, Attr: p.GetCustomAttribute<MaskedAttribute>()))
+                .Where(t => t.Attr is not null)
+                .Select(t => (t.Prop, t.Attr!))
+                .ToArray();
+        });
+
+        foreach (var (prop, attr) in props)
         {
             if (prop.GetValue(entity) is string s && !string.IsNullOrEmpty(s))
             {
-                var attr = prop.GetCustomAttribute<MaskedAttribute>()!;
                 prop.SetValue(entity, _policy.Mask(s, attr.MaskType));
             }
         }
 
         return entity;
     }
-
-    private static IEnumerable<PropertyInfo> MaskedProps(IReadOnlyEntityType entityType)
-        => entityType.GetProperties().Select(p => p.PropertyInfo).OfType<PropertyInfo>()
-            .Where(p => p.GetCustomAttribute<MaskedAttribute>() is not null);
 }
