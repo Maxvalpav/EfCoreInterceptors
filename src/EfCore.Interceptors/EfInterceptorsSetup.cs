@@ -331,4 +331,46 @@ public sealed class EfInterceptorsSetup
     /// <summary>Предупреждает, когда один SaveChanges порождает больше N команд (скрытый N+1 на записи).</summary>
     public EfInterceptorsSetup WithCommandsPerSaveDiagnostics(int warnAbove = 10, ILoggerFactory? loggerFactory = null)
         => Add(new Observability.CommandsPerSaveDiagnosticInterceptor(warnAbove, loggerFactory));
+
+    /// <summary>Trims all string properties (Added/Modified) before save.</summary>
+    public EfInterceptorsSetup WithStringTrimming(Func<string, string?>? normalize = null)
+        => Add(new Saving.StringTrimmingSaveChangesInterceptor(normalize));
+
+    /// <summary>Shadow-property auditing without IAuditableEntity.</summary>
+    public EfInterceptorsSetup WithShadowAuditing(Abstractions.ICurrentUserProvider? currentUserProvider = null, TimeProvider? clock = null)
+        => Add(new Saving.ShadowAuditSaveChangesInterceptor(currentUserProvider, clock));
+
+    /// <summary>Auto-applies soft-delete and tenant filters via model finalizer.</summary>
+    public EfInterceptorsSetup WithModelFilters(Abstractions.ITenantProvider? tenantProvider = null, bool softDelete = true, bool tenant = true)
+        => Add(new Model.ModelFiltersInterceptor(tenantProvider, softDelete, tenant));
+    /// <summary>OpenTelemetry ActivitySource tracing for SaveChanges/Commands.</summary>
+    public EfInterceptorsSetup WithTracing()
+        => Add(new Observability.TracingSaveChangesInterceptor()).Add(new Observability.TracingCommandInterceptor());
+
+    /// <summary>Guards unbounded queries (no Take/First/Single).</summary>
+    public EfInterceptorsSetup WithUnboundedQueryGuard(int maxRows = 0)
+        => Add(new Queries.UnboundedQueryGuardInterceptor(maxRows));
+
+    /// <summary>DLP masking on materialization for [Masked] properties.</summary>
+    public EfInterceptorsSetup WithMasking(Abstractions.IMaskingPolicy? policy = null)
+        => Add(new Materialization.MaskingMaterializationInterceptor(policy));
+
+    /// <summary>PostgreSQL FOR UPDATE/SHARE locking hints via TagWith.</summary>
+    public EfInterceptorsSetup WithPostgresHints(IReadOnlyDictionary<string, string>? hintsByTag = null)
+        => Add(new Commands.QueryHintsCommandInterceptor(hintsByTag: hintsByTag ?? Queries.PostgresQueryHints.Defaults));
+
+    /// <summary>Deterministic searchable encryption for equality lookups.</summary>
+    public EfInterceptorsSetup WithSearchableEncryption(Abstractions.IPropertyValueEncryptor encryptor)
+        => Add(new Saving.PropertyEncryptionSaveChangesInterceptor(encryptor))
+           .Add(new Materialization.PropertyDecryptionMaterializationInterceptor(encryptor));
+
+    /// <summary>Resilience retries for transient command failures.</summary>
+    public EfInterceptorsSetup WithResilience(int maxRetries = 2, TimeSpan? baseDelay = null, ILoggerFactory? loggerFactory = null)
+        => Add(new Commands.ResilienceCommandInterceptor(maxRetries, baseDelay, loggerFactory));
+
+    /// <summary>HybridCache second-level cache (shared IMemoryCache).</summary>
+    public EfInterceptorsSetup WithHybridCache(Microsoft.Extensions.Caching.Memory.IMemoryCache cache, TimeSpan? ttl = null, bool skipInsideTransactions = true)
+        => Add(new Commands.HybridCacheCommandInterceptor(cache, ttl, skipInsideTransactions));
+
 }
+

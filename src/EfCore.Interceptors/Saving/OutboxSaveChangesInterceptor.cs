@@ -82,6 +82,12 @@ public class OutboxSaveChangesInterceptor : SaveChangesInterceptor
             return;
         }
 
+        if (context.Model.FindEntityType(typeof(OutboxMessage)) is null)
+        {
+            throw new InvalidOperationException(
+                "OutboxMessage is not mapped. Call modelBuilder.Entity<OutboxMessage>() in OnModelCreating.");
+        }
+
         var now = DateTimeOffset.UtcNow;
 
         foreach (var (aggregate, events) in snapshot)

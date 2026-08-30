@@ -81,6 +81,12 @@ public class ChangeLogSaveChangesInterceptor(
 
         if (logEntries is not null)
         {
+            if (context.Model.FindEntityType(typeof(ChangeLogEntry)) is null)
+            {
+                throw new InvalidOperationException(
+                    "ChangeLogEntry is not mapped. Call modelBuilder.Entity<ChangeLogEntry>() in OnModelCreating.");
+            }
+
             context.Set<ChangeLogEntry>().AddRange(logEntries);
         }
     }
