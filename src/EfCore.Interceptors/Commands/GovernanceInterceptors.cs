@@ -139,8 +139,16 @@ public class RawSqlUsageDetector(
             return;
         }
 
-        _logger.LogWarning(
-            "Raw SQL executed ({Source}): {Sql}", eventData.CommandSource, sql);
-        _callback?.Invoke(eventData.CommandSource, sql);
+        if (_logger.IsEnabled(LogLevel.Warning))
+            _logger.LogWarning(
+                "Raw SQL executed ({Source}): {Sql}", eventData.CommandSource, sql.Length > 2048 ? sql[..2048] + "..." : sql);
+        try
+        {
+            _callback?.Invoke(eventData.CommandSource, sql);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "RawSqlUsageDetector callback failed for {Source}", eventData.CommandSource);
+        }
     }
 }

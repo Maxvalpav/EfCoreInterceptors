@@ -27,7 +27,8 @@ public class ChangeLogSaveChangesInterceptor(
     private readonly ICurrentUserProvider _users = currentUserProvider ?? StaticCurrentUserProvider.System;
     private readonly System.Runtime.CompilerServices.ConditionalWeakTable<DbContext, PendingHolder> _pendingKeys = new();
     private sealed class PendingHolder(List<(EntityEntry Source, ChangeLogEntry Log)> pending) { public List<(EntityEntry Source, ChangeLogEntry Log)> Pending { get; } = pending; }
-    private readonly System.Collections.Concurrent.ConcurrentDictionary<DbContext, bool> _isPatching = new();
+    private readonly System.Runtime.CompilerServices.ConditionalWeakTable<DbContext, PatchGuard> _isPatching = new();
+    private sealed class PatchGuard { public bool Value; }
 
     public override InterceptionResult<int> SavingChanges(
         DbContextEventData eventData, InterceptionResult<int> result)
@@ -108,7 +109,7 @@ public class ChangeLogSaveChangesInterceptor(
         if (logEntries is not null)
         {
             // Avoid recursion when patching
-            if (_isPatching.TryGetValue(context, out var patching) && patching) return;
+            if (_isPatching.TryGetValue(context, out var g) && g.Value) return;
             context.Set<ChangeLogEntry>().AddRange(logEntries);
             if (pendingAdded is not null && pendingAdded.Count > 0)
             {
@@ -161,14 +162,16 @@ public class ChangeLogSaveChangesInterceptor(
         // Persist corrected keys with a second save in a new transaction (audit trail must be accurate)
         if (needsSecondSave && context is not null)
         {
+            var guard = new PatchGuard { Value = true };
+            _isPatching.Remove(context);
+            _isPatching.Add(context, guard);
             try
             {
-                _isPatching[context] = true;
                 context.SaveChanges();
             }
             finally
             {
-                _isPatching.TryRemove(context, out _);
+                _isPatching.Remove(context);
             }
         }
     }
@@ -191,14 +194,16 @@ public class ChangeLogSaveChangesInterceptor(
 
         if (needsSecondSave && context is not null)
         {
+            var guard = new PatchGuard { Value = true };
+            _isPatching.Remove(context);
+            _isPatching.Add(context, guard);
             try
             {
-                _isPatching[context] = true;
                 await context.SaveChangesAsync();
             }
             finally
             {
-                _isPatching.TryRemove(context, out _);
+                _isPatching.Remove(context);
             }
         }
     }

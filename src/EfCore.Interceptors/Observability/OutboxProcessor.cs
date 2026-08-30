@@ -98,7 +98,7 @@ public class OutboxProcessor<TContext>(
                 if (affected == 0)
                 {
                     _logger.LogWarning("Outbox message {MessageId} was already processed by another worker; skipping.", message.Id);
-                    db.ChangeTracker.Clear();
+                    db.Entry(message).State = EntityState.Detached;
                 }
                 else
                 {

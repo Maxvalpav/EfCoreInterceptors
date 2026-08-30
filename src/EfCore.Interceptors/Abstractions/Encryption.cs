@@ -28,17 +28,26 @@ public interface IPropertyValueEncryptor
 /// and per-record nonces. GCM nonce is random per value, so equality search on ciphertexts
 /// is not possible by design.
 /// </summary>
-public sealed class AesGcmPropertyValueEncryptor : IPropertyValueEncryptor
+public sealed class AesGcmPropertyValueEncryptor : IPropertyValueEncryptor, IDisposable
 {
     private readonly byte[] _key;
+    private bool _disposed;
 
     public AesGcmPropertyValueEncryptor(string base64Key)
     {
         _key = Convert.FromBase64String(base64Key);
         if (_key.Length != 32)
         {
+            CryptographicOperations.ZeroMemory(_key);
             throw new ArgumentException("AES-256 key must be 32 bytes (Base64 of 32 bytes).", nameof(base64Key));
         }
+    }
+
+    public void Dispose()
+    {
+        if (_disposed) return;
+        CryptographicOperations.ZeroMemory(_key);
+        _disposed = true;
     }
 
     public string? Encrypt(string? plaintext)
