@@ -127,8 +127,8 @@ public class ChangeLogSaveChangesInterceptor(
 
     public override async ValueTask<int> SavedChangesAsync(SaveChangesCompletedEventData eventData, int result, CancellationToken cancellationToken = default)
     {
-        await PatchKeysAsync(eventData.Context);
-        return await base.SavedChangesAsync(eventData, result, cancellationToken);
+        await PatchKeysAsync(eventData.Context).ConfigureAwait(false);
+        return await base.SavedChangesAsync(eventData, result, cancellationToken).ConfigureAwait(false);
     }
 
     public override void SaveChangesFailed(DbContextErrorEventData eventData)
@@ -199,7 +199,7 @@ public class ChangeLogSaveChangesInterceptor(
             _isPatching.Add(context, guard);
             try
             {
-                await context.SaveChangesAsync();
+                await context.SaveChangesAsync().ConfigureAwait(false);
             }
             finally
             {

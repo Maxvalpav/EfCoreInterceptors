@@ -170,7 +170,7 @@ public class ConcurrencyRetrySaveChangesInterceptor(
     {
         if (eventData.Context is not { } context || IsNested(context))
         {
-            return await base.ThrowingConcurrencyExceptionAsync(eventData, result, cancellationToken);
+            return await base.ThrowingConcurrencyExceptionAsync(eventData, result, cancellationToken).ConfigureAwait(false);
         }
 
         DbUpdateConcurrencyException? failure = eventData.Exception;
@@ -190,7 +190,7 @@ public class ConcurrencyRetrySaveChangesInterceptor(
 
                 if (delay > TimeSpan.Zero)
                 {
-                    await Task.Delay(delay, cancellationToken);
+                    await Task.Delay(delay, cancellationToken).ConfigureAwait(false);
                 }
             }
 
@@ -199,7 +199,7 @@ public class ConcurrencyRetrySaveChangesInterceptor(
             GetState(context).Retrying = true;
             try
             {
-                await context.SaveChangesAsync(cancellationToken);
+                await context.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
                 Cleanup(context);
                 return InterceptionResult.Suppress();
             }
@@ -215,7 +215,7 @@ public class ConcurrencyRetrySaveChangesInterceptor(
 
         _state.Remove(context);
 
-        return await base.ThrowingConcurrencyExceptionAsync(eventData, result, cancellationToken);
+        return await base.ThrowingConcurrencyExceptionAsync(eventData, result, cancellationToken).ConfigureAwait(false);
     }
 
     // ---- reconciliation -------------------------------------------------------------------

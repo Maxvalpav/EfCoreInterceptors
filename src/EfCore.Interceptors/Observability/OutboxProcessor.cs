@@ -43,7 +43,7 @@ public class OutboxProcessor<TContext>(
         {
             try
             {
-                await ProcessPendingBatchAsync(stoppingToken);
+                await ProcessPendingBatchAsync(stoppingToken).ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
             {
@@ -56,7 +56,7 @@ public class OutboxProcessor<TContext>(
 
             try
             {
-                await Task.Delay(_pollInterval, stoppingToken);
+                await Task.Delay(_pollInterval, stoppingToken).ConfigureAwait(false);
             }
             catch (OperationCanceledException)
             {
@@ -77,7 +77,7 @@ public class OutboxProcessor<TContext>(
             .Where(m => m.ProcessedAtUtc == null)
             .OrderBy(m => m.Id)
             .Take(_batchSize)
-            .ToListAsync(cancellationToken);
+            .ToListAsync(cancellationToken).ConfigureAwait(false);
 
         foreach (var message in pending)
         {
@@ -88,12 +88,12 @@ public class OutboxProcessor<TContext>(
 
             try
             {
-                await handler.HandleAsync(message, cancellationToken);
+                await handler.HandleAsync(message, cancellationToken).ConfigureAwait(false);
 
                 // Atomic stamp: only update if still unprocessed (prevents duplicate delivery)
                 var affected = await db.Set<OutboxMessage>()
                     .Where(m => m.Id == message.Id && m.ProcessedAtUtc == null)
-                    .ExecuteUpdateAsync(s => s.SetProperty(m => m.ProcessedAtUtc, _timeProvider.GetUtcNow()), cancellationToken);
+                    .ExecuteUpdateAsync(s => s.SetProperty(m => m.ProcessedAtUtc, _timeProvider.GetUtcNow()), cancellationToken).ConfigureAwait(false);
 
                 if (affected == 0)
                 {
