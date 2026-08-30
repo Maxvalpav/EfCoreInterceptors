@@ -28,12 +28,15 @@ jobs:
         run: dotnet test EfCoreInterceptors.slnx --no-build -c Release
 
       - name: Pack
-        run: dotnet pack src/EfCore.Interceptors -c Release -o artifacts --no-build
+        run: dotnet pack src/EfCore.Interceptors/EfCore.Interceptors.csproj -c Release -o artifacts
+
+      - name: List artifacts
+        run: ls -lah artifacts/
 
       - name: Push to NuGet
-        run: dotnet nuget push artifacts/*.nupkg --api-key ${{ secrets.NUGET_API_KEY }} --source https://api.nuget.org/v3/index.json --skip-duplicate
+        run: dotnet nuget push "artifacts/*.nupkg" --api-key ${{ secrets.NUGET_API_KEY }} --source https://api.nuget.org/v3/index.json --skip-duplicate
 
       - name: Push symbols
         if: always()
-        run: dotnet nuget push artifacts/*.snupkg --api-key ${{ secrets.NUGET_API_KEY }} --source https://api.nuget.org/v3/index.json --skip-duplicate
+        run: dotnet nuget push "artifacts/*.snupkg" --api-key ${{ secrets.NUGET_API_KEY }} --source https://api.nuget.org/v3/index.json --skip-duplicate
         continue-on-error: true
