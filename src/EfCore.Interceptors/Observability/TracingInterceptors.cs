@@ -95,7 +95,8 @@ public class TracingSaveChangesInterceptor : Microsoft.EntityFrameworkCore.Diagn
 
 public class TracingCommandInterceptor : Microsoft.EntityFrameworkCore.Diagnostics.DbCommandInterceptor
 {
-    private readonly ConcurrentDictionary<System.Data.Common.DbCommand, Activity> _activities = new();
+    private readonly ConditionalWeakTable<System.Data.Common.DbCommand, ActivityHolder> _activities = new();
+    private sealed class ActivityHolder(Activity activity) { public Activity Activity { get; } = activity; }
 
     public override InterceptionResult<System.Data.Common.DbDataReader> ReaderExecuting(
         System.Data.Common.DbCommand command, CommandEventData eventData, InterceptionResult<System.Data.Common.DbDataReader> result)
@@ -195,12 +196,15 @@ public class TracingCommandInterceptor : Microsoft.EntityFrameworkCore.Diagnosti
         var sql = command.CommandText ?? string.Empty;
         if (sql.Length > 200) sql = sql[..200];
         activity.SetTag("db.statement", sql);
-        _activities[command] = activity;
+        _activities.Remove(command);
+        _activities.Add(command, new ActivityHolder(activity));
     }
 
     private void FinishActivity(System.Data.Common.DbCommand command, TimeSpan duration, bool success, Exception? ex = null)
     {
-        if (!_activities.TryRemove(command, out var activity)) return;
+        if (!_activities.TryGetValue(command, out var holder)) return;
+        _activities.Remove(command);
+        var activity = holder.Activity;
         activity.SetTag("db.duration_ms", duration.TotalMilliseconds);
         activity.SetTag("otel.status_code", success ? "OK" : "ERROR");
         if (ex is not null)
@@ -210,5 +214,17 @@ public class TracingCommandInterceptor : Microsoft.EntityFrameworkCore.Diagnosti
         }
 
         activity.Dispose();
+    }
+
+    public override void CommandCanceled(System.Data.Common.DbCommand command, CommandEndEventData eventData)
+    {
+        FinishActivity(command, eventData.Duration, success: false);
+        base.CommandCanceled(command, eventData);
+    }
+
+    public override Task CommandCanceledAsync(System.Data.Common.DbCommand command, CommandEndEventData eventData, CancellationToken cancellationToken = default)
+    {
+        FinishActivity(command, eventData.Duration, success: false);
+        return base.CommandCanceledAsync(command, eventData, cancellationToken);
     }
 }

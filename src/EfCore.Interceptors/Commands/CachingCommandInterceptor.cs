@@ -238,7 +238,8 @@ public class CachingCommandInterceptor : DbCommandInterceptor
             }
             else if (val is byte[] bytes)
             {
-                valStr = $"[bytes:{bytes.Length}:hash:{System.Security.Cryptography.SHA256.HashData(bytes)[0]:X2}]";
+                var h = System.Security.Cryptography.SHA256.HashData(bytes);
+                valStr = $"[bytes:{bytes.Length}:hash:{Convert.ToHexString(h)[..16]}]";
             }
             else
             {

@@ -48,7 +48,7 @@ public class ResilienceExecutionStrategy : ExecutionStrategy
 
     protected override bool ShouldRetryOn(Exception exception)
     {
-        if (_isTransientPredicate != null && _isTransientPredicate(exception))
+        if (_isTransientPredicate != null && (_isTransientPredicate(exception) || _isTransientPredicate(Unwrap(exception))))
         {
             return true;
         }
@@ -80,46 +80,53 @@ public class ResilienceExecutionStrategy : ExecutionStrategy
         return IsTransientMessage(ex.Message);
     }
 
+    private static readonly System.Text.RegularExpressions.Regex TransientRegex = new(@"\b(timeout|deadlock|transient)\b",
+        System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.Compiled | System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+
     private static bool IsTransientMessage(string message)
     {
-        // Avoid false positive on "non-transient" or "not transient"
+        // Avoid false positive on "non-transient" or "not transient" - check negations first
         if (message.Contains("non-transient", StringComparison.OrdinalIgnoreCase)
+            || message.Contains("non_transient", StringComparison.OrdinalIgnoreCase)
             || message.Contains("not transient", StringComparison.OrdinalIgnoreCase))
         {
             return false;
         }
 
-        return message.Contains("timeout", StringComparison.OrdinalIgnoreCase)
-            || message.Contains("deadlock", StringComparison.OrdinalIgnoreCase)
-            || message.Contains("transient", StringComparison.OrdinalIgnoreCase)
-            || (message.Contains("connection", StringComparison.OrdinalIgnoreCase) && message.Contains("closed", StringComparison.OrdinalIgnoreCase))
-            || message.Contains("transport-level error", StringComparison.OrdinalIgnoreCase);
+        if (TransientRegex.IsMatch(message)) return true;
+        if (message.Contains("transport-level error", StringComparison.OrdinalIgnoreCase)) return true;
+        if (message.Contains("connection", StringComparison.OrdinalIgnoreCase) && message.Contains("closed", StringComparison.OrdinalIgnoreCase)) return true;
+        return false;
     }
 
     private static Exception Unwrap(Exception ex)
     {
-        while (ex is DbUpdateException { InnerException: { } inner })
+        var depth = 0;
+        while (depth++ < 5 && ex.InnerException is not null && ex is DbUpdateException or AggregateException or InvalidOperationException)
         {
-            ex = inner;
+            ex = ex.InnerException;
         }
 
         return ex;
     }
 
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<Type, System.Reflection.PropertyInfo?> NumberPropCache = new();
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<Type, System.Reflection.PropertyInfo?> SqlStatePropCache = new();
+
     private static bool IsTransientSqlError(DbException ex)
     {
         try
         {
-            // Microsoft.Data.SqlClient.SqlException has Number property, Npgsql has SqlState etc.
-            // Use reflection to avoid provider-specific reference.
-            var prop = ex.GetType().GetProperty("Number") ?? ex.GetType().GetProperty("ErrorCode");
+            var type = ex.GetType();
+            var prop = NumberPropCache.GetOrAdd(type, t => t.GetProperty("Number") ?? t.GetProperty("ErrorCode"));
             if (prop?.GetValue(ex) is int number)
             {
                 return Array.IndexOf(TransientSqlErrorNumbers, number) >= 0;
             }
 
             // Postgres: SqlState 40001 (serialization_failure), 40P01 deadlock
-            var sqlState = ex.GetType().GetProperty("SqlState")?.GetValue(ex) as string;
+            var sqlStateProp = SqlStatePropCache.GetOrAdd(type, t => t.GetProperty("SqlState"));
+            var sqlState = sqlStateProp?.GetValue(ex) as string;
             if (sqlState is "40001" or "40P01" or "55P03")
             {
                 return true;

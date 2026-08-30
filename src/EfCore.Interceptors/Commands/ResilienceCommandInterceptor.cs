@@ -27,6 +27,9 @@ public class ResilienceCommandInterceptor(
     // Suppress unused parameter warnings (API compat)
     private void _KeepApiCompat() => _ = (maxRetries, baseDelay, maxDelay);
 
+    private static readonly System.Text.RegularExpressions.Regex TransientRegex = new(@"\b(timeout|deadlock|transient)\b",
+        System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.Compiled | System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+
     private bool IsTransient(Exception ex)
     {
         if (ex is TimeoutException)
@@ -36,14 +39,13 @@ public class ResilienceCommandInterceptor(
 
         var msg = ex.Message;
         if (msg.Contains("non-transient", StringComparison.OrdinalIgnoreCase)
+            || msg.Contains("non_transient", StringComparison.OrdinalIgnoreCase)
             || msg.Contains("not transient", StringComparison.OrdinalIgnoreCase))
         {
             return false;
         }
 
-        return msg.Contains("timeout", StringComparison.OrdinalIgnoreCase)
-            || msg.Contains("deadlock", StringComparison.OrdinalIgnoreCase)
-            || msg.Contains("transient", StringComparison.OrdinalIgnoreCase);
+        return TransientRegex.IsMatch(msg);
     }
 
     public override void CommandFailed(DbCommand command, CommandErrorEventData eventData)

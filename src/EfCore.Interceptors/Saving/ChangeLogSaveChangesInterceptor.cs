@@ -25,7 +25,9 @@ public class ChangeLogSaveChangesInterceptor(
 
     private readonly TimeProvider _clock = clock ?? TimeProvider.System;
     private readonly ICurrentUserProvider _users = currentUserProvider ?? StaticCurrentUserProvider.System;
-    private readonly System.Collections.Concurrent.ConcurrentDictionary<DbContext, List<(EntityEntry Source, ChangeLogEntry Log)>> _pendingKeys = new();
+    private readonly System.Runtime.CompilerServices.ConditionalWeakTable<DbContext, PendingHolder> _pendingKeys = new();
+    private sealed class PendingHolder(List<(EntityEntry Source, ChangeLogEntry Log)> pending) { public List<(EntityEntry Source, ChangeLogEntry Log)> Pending { get; } = pending; }
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<DbContext, bool> _isPatching = new();
 
     public override InterceptionResult<int> SavingChanges(
         DbContextEventData eventData, InterceptionResult<int> result)
@@ -105,10 +107,13 @@ public class ChangeLogSaveChangesInterceptor(
 
         if (logEntries is not null)
         {
+            // Avoid recursion when patching
+            if (_isPatching.TryGetValue(context, out var patching) && patching) return;
             context.Set<ChangeLogEntry>().AddRange(logEntries);
             if (pendingAdded is not null && pendingAdded.Count > 0)
             {
-                _pendingKeys[context] = pendingAdded;
+                _pendingKeys.Remove(context);
+                _pendingKeys.Add(context, new PendingHolder(pendingAdded));
             }
         }
     }
@@ -119,31 +124,82 @@ public class ChangeLogSaveChangesInterceptor(
         return base.SavedChanges(eventData, result);
     }
 
-    public override ValueTask<int> SavedChangesAsync(SaveChangesCompletedEventData eventData, int result, CancellationToken cancellationToken = default)
+    public override async ValueTask<int> SavedChangesAsync(SaveChangesCompletedEventData eventData, int result, CancellationToken cancellationToken = default)
     {
-        PatchKeys(eventData.Context);
-        return base.SavedChangesAsync(eventData, result, cancellationToken);
+        await PatchKeysAsync(eventData.Context);
+        return await base.SavedChangesAsync(eventData, result, cancellationToken);
     }
 
     public override void SaveChangesFailed(DbContextErrorEventData eventData)
     {
-        if (eventData.Context is not null) _pendingKeys.TryRemove(eventData.Context, out _);
+        if (eventData.Context is not null) _pendingKeys.Remove(eventData.Context);
         base.SaveChangesFailed(eventData);
     }
 
     public override Task SaveChangesFailedAsync(DbContextErrorEventData eventData, CancellationToken cancellationToken = default)
     {
-        if (eventData.Context is not null) _pendingKeys.TryRemove(eventData.Context, out _);
+        if (eventData.Context is not null) _pendingKeys.Remove(eventData.Context);
         return base.SaveChangesFailedAsync(eventData, cancellationToken);
     }
 
     private void PatchKeys(DbContext? context)
     {
-        if (context is null || !_pendingKeys.TryRemove(context, out var pending)) return;
+        if (context is null || !_pendingKeys.TryGetValue(context, out var holder)) return;
+        _pendingKeys.Remove(context);
+        var pending = holder.Pending;
+        var needsSecondSave = false;
         foreach (var (source, log) in pending)
         {
-            // Re-serialize key after DB generated values (identity)
-            log.EntityKey = SerializeKey(source);
+            var corrected = SerializeKey(source);
+            if (log.EntityKey != corrected)
+            {
+                log.EntityKey = corrected;
+                needsSecondSave = true;
+            }
+        }
+
+        // Persist corrected keys with a second save in a new transaction (audit trail must be accurate)
+        if (needsSecondSave && context is not null)
+        {
+            try
+            {
+                _isPatching[context] = true;
+                context.SaveChanges();
+            }
+            finally
+            {
+                _isPatching.TryRemove(context, out _);
+            }
+        }
+    }
+
+    private async Task PatchKeysAsync(DbContext? context)
+    {
+        if (context is null || !_pendingKeys.TryGetValue(context, out var holder)) return;
+        _pendingKeys.Remove(context);
+        var pending = holder.Pending;
+        var needsSecondSave = false;
+        foreach (var (source, log) in pending)
+        {
+            var corrected = SerializeKey(source);
+            if (log.EntityKey != corrected)
+            {
+                log.EntityKey = corrected;
+                needsSecondSave = true;
+            }
+        }
+
+        if (needsSecondSave && context is not null)
+        {
+            try
+            {
+                _isPatching[context] = true;
+                await context.SaveChangesAsync();
+            }
+            finally
+            {
+                _isPatching.TryRemove(context, out _);
+            }
         }
     }
 

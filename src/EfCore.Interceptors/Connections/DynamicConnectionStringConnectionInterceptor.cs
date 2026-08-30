@@ -12,6 +12,9 @@ namespace EfCore.Interceptors.Connections;
 /// Resolves the effective connection string at open time via a callback (e.g. database-per-tenant
 /// routing, read/write split, dynamic failover targets) and re-points the connection before it opens.
 /// The callback must be thread-safe.
+/// <para><b>Pooling warning:</b> mutating <c>DbConnection.ConnectionString</c> on pooled connections (Npgsql/SqlClient)
+/// poisons the pool — the connection remains keyed to the original string. Disable pooling or use
+/// <c>DbDataSource</c> routing instead for tenant-per-database scenarios.</para>
 /// </summary>
 public partial class DynamicConnectionStringConnectionInterceptor(
     Func<DbContext?, string> connectionStringResolver,
