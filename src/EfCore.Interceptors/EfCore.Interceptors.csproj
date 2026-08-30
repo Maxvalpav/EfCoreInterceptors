@@ -1,4 +1,4 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>
@@ -10,8 +10,8 @@
     <PackageTags>efcore;efcore10;entity-framework-core;interceptors;audit;audit-trail;soft-delete;outbox;multi-tenant;caching;nplus1;metrics;encryption</PackageTags>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <PackageReadmeFile>README.md</PackageReadmeFile>
-    <PackageProjectUrl>https://github.com/anomalyco/opencode</PackageProjectUrl>
-    <RepositoryUrl>https://github.com/anomalyco/opencode</RepositoryUrl>
+    <PackageProjectUrl>https://github.com/Maxvalpav/efcoree</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/Maxvalpav/efcoree</RepositoryUrl>
     <RepositoryType>git</RepositoryType>
     <PublishRepositoryUrl>true</PublishRepositoryUrl>
     <EmbedUntrackedSources>true</EmbedUntrackedSources>
