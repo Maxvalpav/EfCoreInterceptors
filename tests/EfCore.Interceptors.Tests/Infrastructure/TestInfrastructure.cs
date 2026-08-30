@@ -1,6 +1,6 @@
+using System.ComponentModel.DataAnnotations.Schema;
 using EfCore.Interceptors.Abstractions;
 using EfCore.Interceptors.Entities;
-using System.ComponentModel.DataAnnotations.Schema;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;

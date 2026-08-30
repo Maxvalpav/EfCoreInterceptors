@@ -13,7 +13,7 @@ public class LoadStampingMaterializationInterceptor(TimeProvider? clock = null) 
 
     public object InitializedInstance(MaterializationInterceptionData materializationData, object entity)
     {
-        if (entity is ILoadTimestamped stamped && stamped.LoadedAtUtc is null)
+        if (entity is ILoadTimestamped stamped)
         {
             stamped.LoadedAtUtc = _clock.GetUtcNow().UtcDateTime;
         }

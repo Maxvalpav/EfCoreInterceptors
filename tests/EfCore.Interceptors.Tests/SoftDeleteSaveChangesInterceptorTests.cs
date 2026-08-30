@@ -1,7 +1,7 @@
 using EfCore.Interceptors.Abstractions;
-using Microsoft.EntityFrameworkCore;
 using EfCore.Interceptors.Saving;
 using EfCore.Interceptors.Tests.Infrastructure;
+using Microsoft.EntityFrameworkCore;
 
 namespace EfCore.Interceptors.Tests;
 

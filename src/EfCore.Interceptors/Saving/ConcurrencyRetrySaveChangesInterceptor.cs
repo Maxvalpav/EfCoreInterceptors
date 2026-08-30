@@ -185,7 +185,7 @@ public class ConcurrencyRetrySaveChangesInterceptor(
 
                 if (delay > TimeSpan.Zero)
                 {
-                    await Task.Delay(delay, CancellationToken.None);
+                    await Task.Delay(delay, cancellationToken);
                 }
             }
 
@@ -223,14 +223,14 @@ public class ConcurrencyRetrySaveChangesInterceptor(
             switch (_policy)
             {
                 case ConcurrencyRetryPolicy.ClientWins:
-                {
-                    var dbValues = entry.GetDatabaseValues()
-                        ?? throw new InvalidOperationException(
-                            $"Row for '{entry.Metadata.ClrType.Name}' was deleted by another party.");
+                    {
+                        var dbValues = entry.GetDatabaseValues()
+                            ?? throw new InvalidOperationException(
+                                $"Row for '{entry.Metadata.ClrType.Name}' was deleted by another party.");
 
-                    entry.OriginalValues.SetValues(dbValues);
-                    break;
-                }
+                        entry.OriginalValues.SetValues(dbValues);
+                        break;
+                    }
 
                 case ConcurrencyRetryPolicy.StoreWins:
                     entry.Reload();

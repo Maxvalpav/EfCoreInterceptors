@@ -1,3 +1,6 @@
+using System.Data;
+using System.Diagnostics;
+using System.Diagnostics.Metrics;
 using EfCore.Interceptors.Abstractions;
 using EfCore.Interceptors.Commands;
 using EfCore.Interceptors.Queries;
@@ -6,11 +9,8 @@ using EfCore.Interceptors.Tests.Infrastructure;
 using EfCore.Interceptors.Tracking;
 using EfCore.Interceptors.Transactions;
 using Microsoft.EntityFrameworkCore;
-using Microsoft.Extensions.Logging;
-using System.Data;
-using System.Diagnostics;
-using System.Diagnostics.Metrics;
 using Microsoft.EntityFrameworkCore.Storage;
+using Microsoft.Extensions.Logging;
 
 namespace EfCore.Interceptors.Tests;
 

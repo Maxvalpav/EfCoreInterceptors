@@ -37,7 +37,25 @@ public class OutboxSaveChangesInterceptor : SaveChangesInterceptor
     }
 
     public override int SavedChanges(SaveChangesCompletedEventData eventData, int result)
-        => base.SavedChanges(eventData, result);
+    {
+        if (eventData.Context is not null)
+        {
+            _pending.TryRemove(eventData.Context, out _);
+        }
+
+        return base.SavedChanges(eventData, result);
+    }
+
+    public override ValueTask<int> SavedChangesAsync(
+        SaveChangesCompletedEventData eventData, int result, CancellationToken cancellationToken = default)
+    {
+        if (eventData.Context is not null)
+        {
+            _pending.TryRemove(eventData.Context, out _);
+        }
+
+        return base.SavedChangesAsync(eventData, result, cancellationToken);
+    }
 
     private void SnapshotAndQueue(DbContext? context)
     {
@@ -100,5 +118,22 @@ public class OutboxSaveChangesInterceptor : SaveChangesInterceptor
         }
 
         base.SaveChangesFailed(eventData);
+    }
+
+    public override Task SaveChangesFailedAsync(
+        DbContextErrorEventData eventData, CancellationToken cancellationToken = default)
+    {
+        if (eventData.Context is { } context && _pending.TryRemove(context, out var snapshot))
+        {
+            foreach (var (aggregate, events) in snapshot)
+            {
+                foreach (var domainEvent in events)
+                {
+                    aggregate.AddDomainEvent(domainEvent);
+                }
+            }
+        }
+
+        return base.SaveChangesFailedAsync(eventData, cancellationToken);
     }
 }

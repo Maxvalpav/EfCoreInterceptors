@@ -2,8 +2,8 @@ using System.Text;
 using EfCore.Interceptors;
 using EfCore.Interceptors.Abstractions;
 using EfCore.Interceptors.Commands;
-using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.Logging;
 using SampleApp;
 

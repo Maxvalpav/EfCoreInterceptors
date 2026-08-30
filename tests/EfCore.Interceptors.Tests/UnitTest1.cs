@@ -1,4 +1,4 @@
-﻿namespace EfCore.Interceptors.Tests;
+namespace EfCore.Interceptors.Tests;
 
 public class UnitTest1
 {

@@ -1,8 +1,7 @@
+using System.Data.Common;
 using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
-
-using System.Data.Common;
 namespace EfCore.Interceptors.Commands;
 
 /// <summary>

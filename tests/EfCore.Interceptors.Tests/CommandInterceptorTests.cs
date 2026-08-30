@@ -1,6 +1,6 @@
-using Microsoft.EntityFrameworkCore;
 using EfCore.Interceptors.Commands;
 using EfCore.Interceptors.Tests.Infrastructure;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 
 namespace EfCore.Interceptors.Tests;

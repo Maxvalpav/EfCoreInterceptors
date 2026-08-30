@@ -35,17 +35,38 @@ public class DomainEventsSaveChangesInterceptor(IDomainEventDispatcher? dispatch
 
     public override int SavedChanges(SaveChangesCompletedEventData eventData, int result)
     {
-        Publish(eventData.Context, asyncDispatch: false);
+        Publish(eventData.Context);
         return base.SavedChanges(eventData, result);
     }
 
-    public override ValueTask<int> SavedChangesAsync(
+    public override async ValueTask<int> SavedChangesAsync(
         SaveChangesCompletedEventData eventData,
         int result,
         CancellationToken cancellationToken = default)
     {
-        Publish(eventData.Context, asyncDispatch: true, cancellationToken);
-        return base.SavedChangesAsync(eventData, result, cancellationToken);
+        await PublishAsync(eventData.Context, cancellationToken);
+        return await base.SavedChangesAsync(eventData, result, cancellationToken);
+    }
+
+    public override void SaveChangesFailed(DbContextErrorEventData eventData)
+    {
+        if (eventData.Context is not null)
+        {
+            _pending.TryRemove(eventData.Context, out _);
+        }
+
+        base.SaveChangesFailed(eventData);
+    }
+
+    public override Task SaveChangesFailedAsync(
+        DbContextErrorEventData eventData, CancellationToken cancellationToken = default)
+    {
+        if (eventData.Context is not null)
+        {
+            _pending.TryRemove(eventData.Context, out _);
+        }
+
+        return base.SaveChangesFailedAsync(eventData, cancellationToken);
     }
 
     private void Snapshot(DbContext? context)
@@ -74,14 +95,13 @@ public class DomainEventsSaveChangesInterceptor(IDomainEventDispatcher? dispatch
         }
     }
 
-    private void Publish(DbContext? context, bool asyncDispatch, CancellationToken cancellationToken = default)
+    private void Publish(DbContext? context)
     {
         if (context is null || !_pending.TryRemove(context, out var snapshot))
         {
             return;
         }
 
-        // The database work succeeded: events are considered "committed", clear them.
         foreach (var (aggregate, _) in snapshot)
         {
             aggregate.ClearDomainEvents();
@@ -96,14 +116,36 @@ public class DomainEventsSaveChangesInterceptor(IDomainEventDispatcher? dispatch
 
         try
         {
-            if (asyncDispatch)
-            {
-                _dispatcher.DispatchAsync(events, cancellationToken).GetAwaiter().GetResult();
-            }
-            else
-            {
-                _dispatcher.Dispatch(events);
-            }
+            _dispatcher.Dispatch(events);
+        }
+        catch (Exception ex)
+        {
+            throw new InvalidOperationException("Domain event dispatch failed after a successful SaveChanges.", ex);
+        }
+    }
+
+    private async Task PublishAsync(DbContext? context, CancellationToken cancellationToken)
+    {
+        if (context is null || !_pending.TryRemove(context, out var snapshot))
+        {
+            return;
+        }
+
+        foreach (var (aggregate, _) in snapshot)
+        {
+            aggregate.ClearDomainEvents();
+        }
+
+        var events = snapshot.SelectMany(s => s.Events).ToArray();
+
+        if (_dispatcher is null || events.Length == 0)
+        {
+            return;
+        }
+
+        try
+        {
+            await _dispatcher.DispatchAsync(events, cancellationToken);
         }
         catch (Exception ex)
         {
