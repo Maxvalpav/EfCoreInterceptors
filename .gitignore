@@ -11,3 +11,4 @@ artifacts/
 *.snupkg
 coverage/
 BenchmarkDotNet.Artifacts/
+docs/
