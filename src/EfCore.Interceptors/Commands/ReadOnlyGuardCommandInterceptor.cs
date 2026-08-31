@@ -23,7 +23,7 @@ public partial class ReadOnlyGuardCommandInterceptor(
     public override InterceptionResult<DbDataReader> ReaderExecuting(
         DbCommand command, CommandEventData eventData, InterceptionResult<DbDataReader> result)
     {
-        Guard(eventData.Context, command.CommandText);
+        Guard(eventData, command.CommandText);
         return base.ReaderExecuting(command, eventData, result);
     }
 
@@ -31,14 +31,14 @@ public partial class ReadOnlyGuardCommandInterceptor(
         DbCommand command, CommandEventData eventData, InterceptionResult<DbDataReader> result,
         CancellationToken cancellationToken = default)
     {
-        Guard(eventData.Context, command.CommandText);
+        Guard(eventData, command.CommandText);
         return base.ReaderExecutingAsync(command, eventData, result, cancellationToken);
     }
 
     public override InterceptionResult<object> ScalarExecuting(
         DbCommand command, CommandEventData eventData, InterceptionResult<object> result)
     {
-        Guard(eventData.Context, command.CommandText);
+        Guard(eventData, command.CommandText);
         return base.ScalarExecuting(command, eventData, result);
     }
 
@@ -46,14 +46,14 @@ public partial class ReadOnlyGuardCommandInterceptor(
         DbCommand command, CommandEventData eventData, InterceptionResult<object> result,
         CancellationToken cancellationToken = default)
     {
-        Guard(eventData.Context, command.CommandText);
+        Guard(eventData, command.CommandText);
         return base.ScalarExecutingAsync(command, eventData, result, cancellationToken);
     }
 
     public override InterceptionResult<int> NonQueryExecuting(
         DbCommand command, CommandEventData eventData, InterceptionResult<int> result)
     {
-        Guard(eventData.Context, command.CommandText);
+        Guard(eventData, command.CommandText);
         return base.NonQueryExecuting(command, eventData, result);
     }
 
@@ -61,25 +61,39 @@ public partial class ReadOnlyGuardCommandInterceptor(
         DbCommand command, CommandEventData eventData, InterceptionResult<int> result,
         CancellationToken cancellationToken = default)
     {
-        Guard(eventData.Context, command.CommandText);
+        Guard(eventData, command.CommandText);
         return base.NonQueryExecutingAsync(command, eventData, result, cancellationToken);
     }
 
-    protected virtual void Guard(DbContext? context, string sql)
+    protected virtual void Guard(CommandEventData eventData, string sql)
     {
-        if (!_isEnabled(context) || !_isWriteCommand(sql))
-        {
+        if (!_isEnabled(eventData.Context))
             return;
-        }
+
+        var isWrite = eventData.CommandSource switch
+        {
+            CommandSource.SaveChanges => true,
+            CommandSource.Migrations => true,
+            CommandSource.ExecuteDelete => true,
+            CommandSource.ExecuteUpdate => true,
+            CommandSource.ExecuteSqlRaw => _isWriteCommand(sql),
+            _ => false,
+        };
+#pragma warning disable CS0618
+        if (!isWrite && eventData.CommandSource == CommandSource.BulkUpdate) isWrite = true;
+#pragma warning restore CS0618
+#pragma warning restore CS0618
+
+        if (!isWrite) return;
 
         throw new ReadOnlyContextException(
-            $"Write operation blocked: context '{context?.GetType().Name ?? "<unknown>"}' is read-only. " +
+            $"Write operation blocked: context '{eventData.Context?.GetType().Name ?? "<unknown>"}' is read-only. " +
             $"Offending statement: {sql}");
     }
 
     [GeneratedRegex(
-        @"\b(insert\s+into|insert|update\s+\w+\s+set|update|delete\s+from|delete|merge|truncate|create\s+(table|index|view)|alter\s+table|drop\s+(table|index|view))\b",
-        RegexOptions.IgnoreCase | RegexOptions.Compiled | RegexOptions.CultureInvariant)]
+        @"^\s*(?:with\b[\s\S]*?\)\s*)?(insert|update|delete|merge|truncate|drop|alter|create)\b",
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
     private static partial Regex WriteRegex();
 }
 

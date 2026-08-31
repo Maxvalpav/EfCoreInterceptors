@@ -12,8 +12,9 @@ namespace EfCore.Interceptors.Saving;
 public class MassOperationGuardSaveChangesInterceptor(
     int maxAdded = 100,
     int maxModified = 100,
-    int maxDeleted = 100) : SaveChangesInterceptor
+    int maxDeleted = 100) : SaveChangesInterceptor, IOrderedInterceptor
 {
+    public int Order => -200;
     public override InterceptionResult<int> SavingChanges(
         DbContextEventData eventData, InterceptionResult<int> result)
     {

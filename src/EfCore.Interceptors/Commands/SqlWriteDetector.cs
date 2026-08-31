@@ -6,7 +6,7 @@ namespace EfCore.Interceptors.Commands;
 internal static partial class SqlWriteDetector
 {
     [GeneratedRegex(
-        @"\b(insert\s+into|insert|update\s+\w+\s+set|update|delete\s+from|delete|merge|truncate|create\s+(table|index|view)|alter\s+table|drop\s+(table|index|view))\b",
+        @"^\s*(?:with\b[\s\S]*?\)\s*)?(insert|update|delete|merge|truncate|drop|alter|create)\b",
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
     private static partial Regex WriteRegex();
 

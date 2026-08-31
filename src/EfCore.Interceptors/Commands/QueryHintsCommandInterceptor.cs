@@ -22,7 +22,7 @@ public partial class QueryHintsCommandInterceptor(
     public override InterceptionResult<DbDataReader> ReaderExecuting(
         DbCommand command, CommandEventData eventData, InterceptionResult<DbDataReader> result)
     {
-        ApplyHint(command);
+        ApplyHint(command, eventData);
         return base.ReaderExecuting(command, eventData, result);
     }
 
@@ -30,14 +30,14 @@ public partial class QueryHintsCommandInterceptor(
         DbCommand command, CommandEventData eventData, InterceptionResult<DbDataReader> result,
         CancellationToken cancellationToken = default)
     {
-        ApplyHint(command);
+        ApplyHint(command, eventData);
         return base.ReaderExecutingAsync(command, eventData, result, cancellationToken);
     }
 
     public override InterceptionResult<object> ScalarExecuting(
         DbCommand command, CommandEventData eventData, InterceptionResult<object> result)
     {
-        ApplyHint(command);
+        ApplyHint(command, eventData);
         return base.ScalarExecuting(command, eventData, result);
     }
 
@@ -45,14 +45,14 @@ public partial class QueryHintsCommandInterceptor(
         DbCommand command, CommandEventData eventData, InterceptionResult<object> result,
         CancellationToken cancellationToken = default)
     {
-        ApplyHint(command);
+        ApplyHint(command, eventData);
         return base.ScalarExecutingAsync(command, eventData, result, cancellationToken);
     }
 
     public override InterceptionResult<int> NonQueryExecuting(
         DbCommand command, CommandEventData eventData, InterceptionResult<int> result)
     {
-        ApplyHint(command);
+        ApplyHint(command, eventData);
         return base.NonQueryExecuting(command, eventData, result);
     }
 
@@ -60,12 +60,17 @@ public partial class QueryHintsCommandInterceptor(
         DbCommand command, CommandEventData eventData, InterceptionResult<int> result,
         CancellationToken cancellationToken = default)
     {
-        ApplyHint(command);
+        ApplyHint(command, eventData);
         return base.NonQueryExecutingAsync(command, eventData, result, cancellationToken);
     }
 
-    protected virtual void ApplyHint(DbCommand command)
+    protected virtual void ApplyHint(DbCommand command, CommandEventData eventData)
     {
+        // Only for single-statement queries to avoid breaking EF batching (fix-plan 2.5)
+        if (IsBatched(command.CommandText)) return;
+        // Prefer tag-based hints only for query commands, not SaveChanges batches
+        if (eventData.CommandSource is CommandSource.SaveChanges or CommandSource.Migrations) return;
+
         var hint = _hintSelector(command.CommandText);
         if (string.IsNullOrWhiteSpace(hint))
         {
@@ -76,6 +81,18 @@ public partial class QueryHintsCommandInterceptor(
         command.CommandText = trimmed.EndsWith(";")
             ? $"{trimmed[..^1]} {hint};"
             : $"{trimmed} {hint}";
+    }
+
+    private static bool IsBatched(string sql)
+    {
+        // Simple heuristic: more than one ';' with non-empty statements indicates EF batching with multiple statements
+        var count = 0;
+        foreach (var c in sql)
+            if (c == ';') count++;
+        if (count <= 1) return false;
+        // Count non-empty statements
+        var statements = sql.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        return statements.Length > 1;
     }
 
     private static Func<string, string?> DefaultSelector(IReadOnlyDictionary<string, string> hintsByTag)

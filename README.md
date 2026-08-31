@@ -69,11 +69,12 @@ services.AddDbContext<AppDbContext>((sp, options) =>
 
 > Если интерсептору нужны **scoped-зависимости** (например, текущий пользователь из `IHttpContextAccessor`),
 > зарегистрируйте сам интерсептор как Scoped и резолвьте вручную:
-> ```csharp
-> services.AddScoped<AuditSaveChangesInterceptor>();
-> services.AddDbContext<AppDbContext>((sp, options) =>
->     options.UseSqlServer(cs).AddInterceptors(sp.GetRequiredService<AuditSaveChangesInterceptor>()));
-> ```
+
+```csharp
+services.AddScoped<AuditSaveChangesInterceptor>();
+services.AddDbContext<AppDbContext>((sp, options) =>
+    options.UseSqlServer(cs).AddInterceptors(sp.GetRequiredService<AuditSaveChangesInterceptor>()));
+```
 
 ---
 
@@ -155,7 +156,7 @@ services.AddDbContext<AppDbContext>((sp, options) =>
 | `NullMergeIdentityResolutionInterceptor` | Null-preserving merge: входящие значения заполняют только null/пустые свойства отслеживаемого экземпляра — непустые данные всегда побеждают. |
 | `NewestWinsIdentityResolutionInterceptor` | Last-write-wins по штампам: выживает экземпляр с более свежим `UpdatedAtUtc`. |
 
-### 9. Хелперы модели (не интерсепторы, но завершают картину)
+### 8. Хелперы модели (не интерсепторы, но завершают картину)
 
 ```csharp
 modelBuilder.ApplySoftDeleteFilters();          // !IsDeleted всем ISoftDeletableEntity
@@ -164,7 +165,7 @@ modelBuilder.ApplyTenantFilters(tenantProvider); // TenantId == current всем
 Фильтры сливаются с существующими через AndAlso (анонимный) или добавляются отдельными
 именованными фильтрами EF 10 (`EfCoreInterceptors.SoftDelete` / `.Tenant`) — ничего не затирается.
 
-### 10. Наблюдаемость (System.Diagnostics.Metrics)
+### 9. Наблюдаемость (System.Diagnostics.Metrics)
 
 Все метрики публикуются в метре `EfCore.Interceptors` — подключите MeterListener/OTLP-экспортёр.
 
@@ -196,9 +197,9 @@ listener.Start();
 ## Контракты сущностей
 
 ```csharp
-public interface IAuditableEntity      { DateTimeOffset CreatedAtUtc { get; set; } string? CreatedBy { get; set; } DateTimeOffset UpdatedAtUtc { get; set; } string? UpdatedBy { get; set; } }
+public interface IAuditableEntity      { DateTimeOffset CreatedAtUtc { get; set; } string? CreatedBy { get; set; } DateTimeOffset? UpdatedAtUtc { get; set; } string? UpdatedBy { get; set; } }
 public interface ISoftDeletableEntity  { bool IsDeleted { get; set; } DateTimeOffset? DeletedAtUtc { get; set; } string? DeletedBy { get; set; } }
-public interface ILoadTimestamped      { DateTime? LoadedAtUtc { get; set; } }
+public interface ILoadTimestamped      { DateTimeOffset? LoadedAtUtc { get; set; } }
 
 public interface IDomainEvent          { DateTimeOffset OccurredAtUtc { get; } }
 public interface IHasDomainEvents      { IReadOnlyList<IDomainEvent> DomainEvents { get; } void AddDomainEvent(IDomainEvent e); void ClearDomainEvents(); }
@@ -218,7 +219,7 @@ modelBuilder.Entity<ChangeLogEntry>();
 modelBuilder.Entity<OutboxMessage>();
 ```
 
-## Типовой связкой: soft delete целиком
+## Типовая связка: soft delete целиком
 
 ```csharp
 // 1. Сущность
@@ -236,6 +237,10 @@ modelBuilder.Entity<Order>().HasQueryFilter(o => !o.IsDeleted);
 ```csharp
 public class Order : IHasDomainEvents
 {
+    public int Id { get; set; }
+    public decimal Total { get; set; }
+    public bool IsPaid { get; private set; }
+
     private readonly List<IDomainEvent> _events = [];
     [NotMapped] public IReadOnlyList<IDomainEvent> DomainEvents => _events;
     public void AddDomainEvent(IDomainEvent e) => _events.Add(e);
@@ -248,7 +253,7 @@ public class Order : IHasDomainEvents
     }
 }
 
-class OrderPaid(int orderId, decimal total) : IDomainEvent
+public sealed record OrderPaid(int OrderId, decimal Total) : IDomainEvent
 {
     public DateTimeOffset OccurredAtUtc { get; } = DateTimeOffset.UtcNow;
 }
@@ -287,7 +292,7 @@ class OrderPaid(int orderId, decimal total) : IDomainEvent
 Запуск и проверка вживую:
 
 ```bash
-dotnet run --project samples/WebApiSample
+dotnet run --project samples/WebApiSample --urls http://localhost:5000
 # в другом терминале:
 curl -X POST http://localhost:5000/products -H "X-User: alice" \
      -H "Content-Type: application/json" -d '{"name":"Keyboard","price":49.9}'

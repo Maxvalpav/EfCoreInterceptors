@@ -1,4 +1,5 @@
 using System.ComponentModel.DataAnnotations;
+using EfCore.Interceptors.Abstractions;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.ChangeTracking;
 using Microsoft.EntityFrameworkCore.Diagnostics;
@@ -11,8 +12,9 @@ namespace EfCore.Interceptors.Saving;
 /// <see cref="EntityValidationException"/> listing ALL violations — instead of failing on the
 /// first one at the database.
 /// </summary>
-public class ValidationSaveChangesInterceptor : SaveChangesInterceptor
+public class ValidationSaveChangesInterceptor : SaveChangesInterceptor, IOrderedInterceptor
 {
+    public int Order => -300;
     public override InterceptionResult<int> SavingChanges(
         DbContextEventData eventData, InterceptionResult<int> result)
     {

@@ -100,10 +100,33 @@ public partial class ConnectionLifecycleLoggingInterceptor(
         => $"{connection.GetType().Name} (Database: '{connection.Database}')";
 
     internal static string Mask(string connectionString)
-        => string.IsNullOrEmpty(connectionString)
-            ? connectionString
-            : SecretsRegex().Replace(connectionString, "$1=***");
+    {
+        if (string.IsNullOrEmpty(connectionString)) return connectionString;
+        // Prefer builder-aware masking to handle quoted values with embedded ';' (e.g. Password='a;b') and provider-specific keys
+        try
+        {
+            var builder = new System.Data.Common.DbConnectionStringBuilder { ConnectionString = connectionString };
+            var keysToMask = new List<string>();
+            foreach (string key in builder.Keys)
+            {
+                if (key.Contains("password", StringComparison.OrdinalIgnoreCase)
+                    || key.Equals("pwd", StringComparison.OrdinalIgnoreCase)
+                    || key.Contains("secret", StringComparison.OrdinalIgnoreCase)
+                    || key.Contains("token", StringComparison.OrdinalIgnoreCase)
+                    || key.Contains("key", StringComparison.OrdinalIgnoreCase)
+                    || key.Contains("auth", StringComparison.OrdinalIgnoreCase))
+                    keysToMask.Add(key);
+            }
+            foreach (var k in keysToMask) builder[k] = "***";
+            if (keysToMask.Count > 0) return builder.ConnectionString;
+        }
+        catch
+        {
+            // Fallback to regex if builder fails to parse
+        }
+        return SecretsRegex().Replace(connectionString, "$1=***");
+    }
 
-    [GeneratedRegex(@"(?i)\b(password|pwd|secret|token)\s*=\s*[^;]*")]
+    [GeneratedRegex(@"(?i)\b(password|pwd|secret|token|key|auth)\s*=\s*[^;]*")]
     private static partial Regex SecretsRegex();
 }

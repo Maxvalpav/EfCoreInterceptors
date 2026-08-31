@@ -15,8 +15,9 @@ namespace EfCore.Interceptors.Saving;
 /// </summary>
 public class ChangeLogSaveChangesInterceptor(
     ICurrentUserProvider? currentUserProvider = null,
-    TimeProvider? clock = null) : SaveChangesInterceptor
+    TimeProvider? clock = null) : SaveChangesInterceptor, IOrderedInterceptor
 {
+    public int Order => 100;
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         WriteIndented = false,
@@ -159,7 +160,7 @@ public class ChangeLogSaveChangesInterceptor(
             }
         }
 
-        // Persist corrected keys with a second save in a new transaction (audit trail must be accurate)
+        // Persist corrected keys - must stay in same transaction if one is active, otherwise wrap atomically
         if (needsSecondSave && context is not null)
         {
             var guard = new PatchGuard { Value = true };
@@ -167,7 +168,16 @@ public class ChangeLogSaveChangesInterceptor(
             _isPatching.Add(context, guard);
             try
             {
-                context.SaveChanges();
+                if (context.Database.CurrentTransaction is not null)
+                {
+                    context.SaveChanges();
+                }
+                else
+                {
+                    using var tx = context.Database.BeginTransaction();
+                    context.SaveChanges();
+                    tx.Commit();
+                }
             }
             finally
             {
@@ -199,7 +209,16 @@ public class ChangeLogSaveChangesInterceptor(
             _isPatching.Add(context, guard);
             try
             {
-                await context.SaveChangesAsync().ConfigureAwait(false);
+                if (context.Database.CurrentTransaction is not null)
+                {
+                    await context.SaveChangesAsync().ConfigureAwait(false);
+                }
+                else
+                {
+                    await using var tx = await context.Database.BeginTransactionAsync().ConfigureAwait(false);
+                    await context.SaveChangesAsync().ConfigureAwait(false);
+                    await tx.CommitAsync().ConfigureAwait(false);
+                }
             }
             finally
             {
@@ -209,7 +228,9 @@ public class ChangeLogSaveChangesInterceptor(
     }
 
     private static List<Dictionary<string, object?>> BuildDiff(EntityEntry entry)
-        => entry.Properties
+    {
+        // Include owned entities' properties that are stored as part of same table
+        var diff = entry.Properties
             .Where(p => entry.State != EntityState.Modified || p.IsModified)
             .Select(p => new Dictionary<string, object?>
             {
@@ -218,6 +239,17 @@ public class ChangeLogSaveChangesInterceptor(
                 ["new"] = entry.State == EntityState.Deleted ? null : p.CurrentValue
             })
             .ToList();
+        // Owned value-objects (e.g. Owned<T>) are separate entries that would otherwise be missed
+        foreach (var nav in entry.References)
+        {
+            var target = nav.TargetEntry;
+            if (target is not null && target.Metadata.IsOwned() && target.State is EntityState.Added or EntityState.Modified or EntityState.Deleted)
+            {
+                diff.AddRange(BuildDiff(target));
+            }
+        }
+        return diff;
+    }
 
     private static string SerializeKey(EntityEntry entry)
     {

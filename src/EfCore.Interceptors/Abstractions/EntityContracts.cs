@@ -13,8 +13,8 @@ public interface IAuditableEntity
     /// <summary>Name of the principal that created the row.</summary>
     string? CreatedBy { get; set; }
 
-    /// <summary>UTC timestamp of the last modification.</summary>
-    DateTimeOffset UpdatedAtUtc { get; set; }
+    /// <summary>UTC timestamp of the last modification. Null until first update.</summary>
+    DateTimeOffset? UpdatedAtUtc { get; set; }
 
     /// <summary>Name of the principal that performed the last modification.</summary>
     string? UpdatedBy { get; set; }
@@ -41,7 +41,7 @@ public interface ISoftDeletableEntity
 public interface ILoadTimestamped
 {
     /// <summary>UTC timestamp assigned right after the entity is materialized.</summary>
-    DateTime? LoadedAtUtc { get; set; }
+    DateTimeOffset? LoadedAtUtc { get; set; }
 }
 
 /// <summary>

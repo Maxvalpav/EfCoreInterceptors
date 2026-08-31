@@ -14,14 +14,14 @@ public class Cat : IAuditableEntity, ISoftDeletableEntity, ILoadTimestamped
 
     public DateTimeOffset CreatedAtUtc { get; set; }
     public string? CreatedBy { get; set; }
-    public DateTimeOffset UpdatedAtUtc { get; set; }
+    public DateTimeOffset? UpdatedAtUtc { get; set; }
     public string? UpdatedBy { get; set; }
 
     public bool IsDeleted { get; set; }
     public DateTimeOffset? DeletedAtUtc { get; set; }
     public string? DeletedBy { get; set; }
 
-    public DateTime? LoadedAtUtc { get; set; }
+    public DateTimeOffset? LoadedAtUtc { get; set; }
 }
 
 public class TestDbContext(DbContextOptions<TestDbContext> options) : DbContext(options)
@@ -188,7 +188,7 @@ public class Dog : IAuditableEntity
 
     public DateTimeOffset CreatedAtUtc { get; set; }
     public string? CreatedBy { get; set; }
-    public DateTimeOffset UpdatedAtUtc { get; set; }
+    public DateTimeOffset? UpdatedAtUtc { get; set; }
     public string? UpdatedBy { get; set; }
 }
 

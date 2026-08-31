@@ -5,3 +5,6 @@ public sealed class ProtectedEntityException(string message) : InvalidOperationE
 
 /// <summary>Raised when an IImmutableEntity is modified or deleted.</summary>
 public sealed class ImmutableEntityException(string message) : InvalidOperationException(message);
+
+/// <summary>Raised when soft-deleting a parent would hard-delete children without ISoftDeletableEntity.</summary>
+public sealed class SoftDeleteCascadeException(string message) : InvalidOperationException(message);

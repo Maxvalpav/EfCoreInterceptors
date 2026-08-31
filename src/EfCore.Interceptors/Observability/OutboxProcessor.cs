@@ -72,11 +72,19 @@ public class OutboxProcessor<TContext>(
         using var scope = scopeFactory.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<TContext>();
         var handler = scope.ServiceProvider.GetRequiredService<IOutboxMessageHandler>();
+        var now = _timeProvider.GetUtcNow();
 
-        var pending = await db.Set<OutboxMessage>()
-            .Where(m => m.ProcessedAtUtc == null)
+        // Claim a batch with optimistic lock to avoid double-delivery on multiple instances
+        var claimUntil = now.AddMinutes(1);
+        await db.Set<OutboxMessage>()
+            .Where(m => m.ProcessedAtUtc == null && (m.LockedUntilUtc == null || m.LockedUntilUtc < now))
             .OrderBy(m => m.Id)
             .Take(_batchSize)
+            .ExecuteUpdateAsync(s => s.SetProperty(m => m.LockedUntilUtc, claimUntil), cancellationToken).ConfigureAwait(false);
+
+        var pending = await db.Set<OutboxMessage>()
+            .Where(m => m.LockedUntilUtc == claimUntil && m.ProcessedAtUtc == null)
+            .OrderBy(m => m.Id)
             .ToListAsync(cancellationToken).ConfigureAwait(false);
 
         foreach (var message in pending)
@@ -93,7 +101,10 @@ public class OutboxProcessor<TContext>(
                 // Atomic stamp: only update if still unprocessed (prevents duplicate delivery)
                 var affected = await db.Set<OutboxMessage>()
                     .Where(m => m.Id == message.Id && m.ProcessedAtUtc == null)
-                    .ExecuteUpdateAsync(s => s.SetProperty(m => m.ProcessedAtUtc, _timeProvider.GetUtcNow()), cancellationToken).ConfigureAwait(false);
+                    .ExecuteUpdateAsync(s => s
+                        .SetProperty(m => m.ProcessedAtUtc, _timeProvider.GetUtcNow())
+                        .SetProperty(m => m.LockedUntilUtc, (DateTimeOffset?)null)
+                        .SetProperty(m => m.Error, (string?)null), cancellationToken).ConfigureAwait(false);
 
                 if (affected == 0)
                 {
@@ -107,12 +118,27 @@ public class OutboxProcessor<TContext>(
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
-                // Poison/failed message: left unprocessed, retried next cycle with backoff.
-                // Detach to avoid tracking corrupted state.
-                db.Entry(message).State = EntityState.Unchanged;
+                // Poison/failed message: increment attempt, store error, apply exponential backoff dead-letter after 10 tries
+                var backoff = TimeSpan.FromSeconds(Math.Min(300, Math.Pow(2, message.AttemptCount)));
+                var nextLockedUntil = _timeProvider.GetUtcNow().Add(backoff);
+                var errorMsg = ex.Message[..Math.Min(1000, ex.Message.Length)];
+
+                if (message.AttemptCount >= 10)
+                {
+                    _logger.LogError(ex, "Outbox message {MessageId} ({Type}) exceeded max retries; dead-lettered.", message.Id, message.Type);
+                }
+
+                await db.Set<OutboxMessage>()
+                    .Where(m => m.Id == message.Id)
+                    .ExecuteUpdateAsync(s => s
+                        .SetProperty(m => m.AttemptCount, m => m.AttemptCount + 1)
+                        .SetProperty(m => m.Error, errorMsg)
+                        .SetProperty(m => m.LockedUntilUtc, nextLockedUntil), cancellationToken).ConfigureAwait(false);
+
+                db.Entry(message).State = EntityState.Detached;
                 _logger.LogError(ex,
-                    "Outbox message {MessageId} ({Type}) failed; will retry.",
-                    message.Id, message.Type);
+                    "Outbox message {MessageId} ({Type}) failed; will retry after {Backoff}s (attempt {Attempt}).",
+                    message.Id, message.Type, backoff.TotalSeconds, message.AttemptCount + 1);
             }
         }
     }

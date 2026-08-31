@@ -9,8 +9,9 @@ namespace EfCore.Interceptors.Saving;
 /// every Modified <see cref="IVersionedEntity"/> gets Version + 1 before the save.
 /// Pair with a mapped concurrency token to actually reject stale writes.
 /// </summary>
-public class VersionIncrementSaveChangesInterceptor : SaveChangesInterceptor
+public class VersionIncrementSaveChangesInterceptor : SaveChangesInterceptor, IOrderedInterceptor
 {
+    public int Order => 50;
     public override InterceptionResult<int> SavingChanges(
         DbContextEventData eventData, InterceptionResult<int> result)
     {
@@ -38,6 +39,9 @@ public class VersionIncrementSaveChangesInterceptor : SaveChangesInterceptor
         {
             if (entry.State == EntityState.Modified)
             {
+                // Avoid double-increment on concurrency retry (ClientWins keeps Version modified)
+                var prop = entry.Property(nameof(IVersionedEntity.Version));
+                if (prop.IsModified) continue;
                 entry.Entity.Version++;
             }
         }

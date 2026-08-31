@@ -12,8 +12,9 @@ namespace EfCore.Interceptors.Saving;
 /// and clears them from the aggregates. If the save fails the events stay on their aggregates
 /// and will be picked up by the next attempt.
 /// </summary>
-public class DomainEventsSaveChangesInterceptor(IDomainEventDispatcher? dispatcher = null) : SaveChangesInterceptor
+public class DomainEventsSaveChangesInterceptor(IDomainEventDispatcher? dispatcher = null) : SaveChangesInterceptor, IOrderedInterceptor
 {
+    public int Order => 300;
     private readonly ConditionalWeakTable<DbContext, PendingHolder> _pending = new();
     private sealed class PendingHolder(List<(IHasDomainEvents Aggregate, IReadOnlyList<IDomainEvent> Events)> snapshot)
     {

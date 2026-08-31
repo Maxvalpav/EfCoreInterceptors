@@ -13,7 +13,7 @@ namespace EfCore.Interceptors.Commands;
 /// Entries expire after the configured TTL. Caching is skipped inside explicit transactions by
 /// default to avoid dirty reads.
 /// </summary>
-public class CachingCommandInterceptor : DbCommandInterceptor
+public class CachingCommandInterceptor : DbCommandInterceptor, Microsoft.EntityFrameworkCore.Diagnostics.IDbTransactionInterceptor
 {
     private sealed class CacheEntry(CachedQueryResult result, DateTimeOffset expiresAtUtc)
     {
@@ -26,6 +26,7 @@ public class CachingCommandInterceptor : DbCommandInterceptor
     private readonly bool _skipInsideTransactions;
     private readonly bool _invalidateOnWrites;
     private readonly int _maxEntries;
+    private volatile bool _pendingInvalidation;
 
     public CachingCommandInterceptor(
         TimeSpan? timeToLive = null,
@@ -108,7 +109,10 @@ public class CachingCommandInterceptor : DbCommandInterceptor
     {
         if (_invalidateOnWrites)
         {
-            InvalidateAll();
+            if (eventData.Context?.Database.CurrentTransaction is not null)
+                _pendingInvalidation = true;
+            else
+                InvalidateAll();
         }
 
         return base.NonQueryExecuted(command, eventData, result);
@@ -120,7 +124,10 @@ public class CachingCommandInterceptor : DbCommandInterceptor
     {
         if (_invalidateOnWrites)
         {
-            InvalidateAll();
+            if (eventData.Context?.Database.CurrentTransaction is not null)
+                _pendingInvalidation = true;
+            else
+                InvalidateAll();
         }
 
         return await base.NonQueryExecutedAsync(command, eventData, result, cancellationToken);
@@ -130,7 +137,10 @@ public class CachingCommandInterceptor : DbCommandInterceptor
     {
         if (_invalidateOnWrites && SqlWriteDetector.IsWrite(command.CommandText))
         {
-            InvalidateAll();
+            if (eventData.Context?.Database.CurrentTransaction is not null)
+                _pendingInvalidation = true;
+            else
+                InvalidateAll();
         }
 
         return base.ReaderExecuted(command, eventData, result);
@@ -140,10 +150,40 @@ public class CachingCommandInterceptor : DbCommandInterceptor
     {
         if (_invalidateOnWrites && SqlWriteDetector.IsWrite(command.CommandText))
         {
-            InvalidateAll();
+            if (eventData.Context?.Database.CurrentTransaction is not null)
+                _pendingInvalidation = true;
+            else
+                InvalidateAll();
         }
 
         return base.ScalarExecuted(command, eventData, result);
+    }
+
+    // Invalidate only after transaction commits to avoid dirty reads and premature eviction on rollback
+    public void TransactionCommitted(System.Data.Common.DbTransaction transaction, TransactionEndEventData eventData)
+    {
+        if (_pendingInvalidation)
+        {
+            _pendingInvalidation = false;
+            InvalidateAll();
+        }
+    }
+
+    public ValueTask TransactionCommittedAsync(System.Data.Common.DbTransaction transaction, TransactionEndEventData eventData, CancellationToken cancellationToken = default)
+    {
+        if (_pendingInvalidation)
+        {
+            _pendingInvalidation = false;
+            InvalidateAll();
+        }
+        return default;
+    }
+
+    public void TransactionRolledBack(System.Data.Common.DbTransaction transaction, TransactionEndEventData eventData) => _pendingInvalidation = false;
+    public ValueTask TransactionRolledBackAsync(System.Data.Common.DbTransaction transaction, TransactionEndEventData eventData, CancellationToken cancellationToken = default)
+    {
+        _pendingInvalidation = false;
+        return default;
     }
 
     private void AddOrEvict(string key, CachedQueryResult snapshot)
@@ -228,7 +268,8 @@ public class CachingCommandInterceptor : DbCommandInterceptor
     internal static string BuildKey(DbCommand command)
     {
         var sb = new System.Text.StringBuilder(command.CommandText);
-        foreach (var parameter in command.Parameters.OfType<DbParameter>())
+        // Sort parameters to make key deterministic regardless of provider ordering
+        foreach (var parameter in command.Parameters.OfType<DbParameter>().OrderBy(p => p.ParameterName, StringComparer.Ordinal))
         {
             var val = parameter.Value;
             string valStr;

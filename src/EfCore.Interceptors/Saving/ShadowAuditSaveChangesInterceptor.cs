@@ -11,8 +11,9 @@ namespace EfCore.Interceptors.Saving;
 /// </summary>
 public class ShadowAuditSaveChangesInterceptor(
     Abstractions.ICurrentUserProvider? currentUserProvider = null,
-    TimeProvider? clock = null) : SaveChangesInterceptor
+    TimeProvider? clock = null) : SaveChangesInterceptor, Abstractions.IOrderedInterceptor
 {
+    public int Order => 0;
     private readonly TimeProvider _clock = clock ?? TimeProvider.System;
     private readonly Abstractions.ICurrentUserProvider _users = currentUserProvider ?? Abstractions.StaticCurrentUserProvider.System;
 
@@ -70,7 +71,7 @@ public class ShadowAuditSaveChangesInterceptor(
     {
         var prop = entry.Metadata.FindProperty(propertyName);
         if (prop is null) return;
-        var clrType = prop.ClrType;
+        var clrType = Nullable.GetUnderlyingType(prop.ClrType) ?? prop.ClrType;
         object? converted = clrType == typeof(DateTimeOffset) ? value
             : clrType == typeof(DateTime) ? value.UtcDateTime
             : clrType == typeof(string) ? value.ToString("O")

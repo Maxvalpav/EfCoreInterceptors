@@ -17,7 +17,7 @@ public class Order : IAuditableEntity, ISoftDeletableEntity, IHasDomainEvents, I
     // Audit
     public DateTimeOffset CreatedAtUtc { get; set; }
     public string? CreatedBy { get; set; }
-    public DateTimeOffset UpdatedAtUtc { get; set; }
+    public DateTimeOffset? UpdatedAtUtc { get; set; }
     public string? UpdatedBy { get; set; }
 
     // Soft delete
@@ -26,7 +26,7 @@ public class Order : IAuditableEntity, ISoftDeletableEntity, IHasDomainEvents, I
     public string? DeletedBy { get; set; }
 
     // Materialization stamp
-    public DateTime? LoadedAtUtc { get; set; }
+    public DateTimeOffset? LoadedAtUtc { get; set; }
 
     [NotMapped]
     public IReadOnlyList<IDomainEvent> DomainEvents => _events;
@@ -55,7 +55,7 @@ public class OrderItem : IAuditableEntity, ISoftDeletableEntity
 
     public DateTimeOffset CreatedAtUtc { get; set; }
     public string? CreatedBy { get; set; }
-    public DateTimeOffset UpdatedAtUtc { get; set; }
+    public DateTimeOffset? UpdatedAtUtc { get; set; }
     public string? UpdatedBy { get; set; }
 
     public bool IsDeleted { get; set; }

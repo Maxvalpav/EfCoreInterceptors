@@ -23,7 +23,10 @@ public sealed class NewestWinsIdentityResolutionInterceptor : IIdentityResolutio
             return; // no timestamps to compare — keep tracked state
         }
 
-        if (incoming.UpdatedAtUtc > existing.UpdatedAtUtc)
+        // Nullable UpdatedAtUtc: null = never updated, treat as oldest
+        var incomingTime = incoming.UpdatedAtUtc ?? incoming.CreatedAtUtc;
+        var existingTime = existing.UpdatedAtUtc ?? existing.CreatedAtUtc;
+        if (incomingTime > existingTime)
         {
             existingEntry.CurrentValues.SetValues(newEntity);
         }

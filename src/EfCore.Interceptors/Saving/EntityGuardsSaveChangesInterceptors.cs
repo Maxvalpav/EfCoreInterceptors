@@ -9,8 +9,9 @@ namespace EfCore.Interceptors.Saving;
 /// <see cref="ProtectedEntityException"/> before reaching the database — even when soft delete
 /// would later convert it. Use for records that must never disappear (financial, legal).
 /// </summary>
-public class DeleteGuardSaveChangesInterceptor : SaveChangesInterceptor
+public class DeleteGuardSaveChangesInterceptor : SaveChangesInterceptor, Abstractions.IOrderedInterceptor
 {
+    public int Order => -200;
     public override InterceptionResult<int> SavingChanges(
         DbContextEventData eventData, InterceptionResult<int> result)
     {
@@ -50,8 +51,9 @@ public class DeleteGuardSaveChangesInterceptor : SaveChangesInterceptor
 /// (audit history, posted ledger rows) are rejected with <see cref="ImmutableEntityException"/>.
 /// Inserts remain allowed.
 /// </summary>
-public class ImmutableEntityGuardSaveChangesInterceptor : SaveChangesInterceptor
+public class ImmutableEntityGuardSaveChangesInterceptor : SaveChangesInterceptor, Abstractions.IOrderedInterceptor
 {
+    public int Order => -200;
     public override InterceptionResult<int> SavingChanges(
         DbContextEventData eventData, InterceptionResult<int> result)
     {

@@ -27,7 +27,12 @@ public sealed class EfInterceptorsSetup
     {
         if (_interceptors.Count > 0)
         {
-            builder.AddInterceptors([.. _interceptors]);
+            // Deterministic save-pipeline order: Validation → Guards → MultiTenancy → SoftDelete → Audit → Version → ChangeLog → Outbox → DomainEvents → Metrics
+            var ordered = _interceptors
+                .OrderBy(i => (i as IOrderedInterceptor)?.Order ?? 0)
+                .ThenBy(i => _interceptors.IndexOf(i))
+                .ToArray();
+            builder.AddInterceptors(ordered);
         }
     }
 

@@ -11,8 +11,9 @@ namespace EfCore.Interceptors.Saving;
 /// Combine with a global query filter (<c>HasQueryFilter(e =&gt; e.TenantId == current)</c>)
 /// or a query-expression policy for read isolation.
 /// </summary>
-public class MultiTenancySaveChangesInterceptor(ITenantProvider tenantProvider) : SaveChangesInterceptor
+public class MultiTenancySaveChangesInterceptor(ITenantProvider tenantProvider) : SaveChangesInterceptor, IOrderedInterceptor
 {
+    public int Order => -150;
     private readonly ITenantProvider _tenants = tenantProvider;
 
     public override InterceptionResult<int> SavingChanges(

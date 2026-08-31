@@ -47,4 +47,13 @@ public class OutboxMessage
     public DateTimeOffset OccurredAtUtc { get; set; }
 
     public DateTimeOffset? ProcessedAtUtc { get; set; }
+
+    /// <summary>Claim lock for multi-instance delivery (null = not locked).</summary>
+    public DateTimeOffset? LockedUntilUtc { get; set; }
+
+    /// <summary>Delivery attempt count.</summary>
+    public int AttemptCount { get; set; }
+
+    /// <summary>Last delivery error (if any).</summary>
+    public string? Error { get; set; }
 }

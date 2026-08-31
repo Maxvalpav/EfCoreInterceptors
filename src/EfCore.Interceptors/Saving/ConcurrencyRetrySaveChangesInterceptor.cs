@@ -105,7 +105,7 @@ public class ConcurrencyRetrySaveChangesInterceptor(
     public override InterceptionResult ThrowingConcurrencyException(
         ConcurrencyExceptionEventData eventData, InterceptionResult result)
     {
-        if (eventData.Context is not { } context || IsNested(context))
+        if (eventData.Context is not { } context || IsNested(context) || context.Database.CurrentTransaction is not null)
         {
             return base.ThrowingConcurrencyException(eventData, result);
         }
@@ -168,7 +168,7 @@ public class ConcurrencyRetrySaveChangesInterceptor(
         InterceptionResult result,
         CancellationToken cancellationToken)
     {
-        if (eventData.Context is not { } context || IsNested(context))
+        if (eventData.Context is not { } context || IsNested(context) || context.Database.CurrentTransaction is not null)
         {
             return await base.ThrowingConcurrencyExceptionAsync(eventData, result, cancellationToken).ConfigureAwait(false);
         }
@@ -237,8 +237,14 @@ public class ConcurrencyRetrySaveChangesInterceptor(
                     }
 
                 case ConcurrencyRetryPolicy.StoreWins:
-                    entry.Reload();
-                    break;
+                    {
+                        var dbValues = entry.GetDatabaseValues();
+                        if (dbValues is null)
+                            throw new InvalidOperationException(
+                                $"Row for '{entry.Metadata.ClrType.Name}' was deleted by another party.");
+                        entry.Reload();
+                        break;
+                    }
             }
         }
     }

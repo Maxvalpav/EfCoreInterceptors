@@ -11,8 +11,9 @@ namespace EfCore.Interceptors.Saving;
 /// </summary>
 public class AuditSaveChangesInterceptor(
     ICurrentUserProvider? currentUserProvider = null,
-    TimeProvider? clock = null) : SaveChangesInterceptor
+    TimeProvider? clock = null) : SaveChangesInterceptor, IOrderedInterceptor
 {
+    public int Order => 0;
     private readonly TimeProvider _clock = clock ?? TimeProvider.System;
     private readonly ICurrentUserProvider _users = currentUserProvider ?? StaticCurrentUserProvider.System;
 
@@ -47,18 +48,22 @@ public class AuditSaveChangesInterceptor(
             switch (entry.State)
             {
                 case EntityState.Added:
-                    entry.Entity.CreatedAtUtc = now;
-                    entry.Entity.CreatedBy = user;
-                    entry.Entity.UpdatedAtUtc = now;
-                    entry.Entity.UpdatedBy = user;
+                    // Respect pre-filled import/migration values (logic-audit #2)
+                    if (entry.Entity.CreatedAtUtc == default) entry.Entity.CreatedAtUtc = now;
+                    if (entry.Entity.CreatedBy is null) entry.Entity.CreatedBy = user;
+                    // Updated* for new entities mirrors Created* if not already set
+                    if (entry.Entity.UpdatedAtUtc is null) entry.Entity.UpdatedAtUtc = now;
+                    if (entry.Entity.UpdatedBy is null) entry.Entity.UpdatedBy = user;
                     break;
 
                 case EntityState.Modified:
                     entry.Entity.UpdatedAtUtc = now;
                     entry.Entity.UpdatedBy = user;
                     // Creation stamps are immutable once written.
-                    entry.Property(nameof(IAuditableEntity.CreatedAtUtc)).IsModified = false;
-                    entry.Property(nameof(IAuditableEntity.CreatedBy)).IsModified = false;
+                    if (entry.Metadata.FindProperty(nameof(IAuditableEntity.CreatedAtUtc)) is not null)
+                        entry.Property(nameof(IAuditableEntity.CreatedAtUtc)).IsModified = false;
+                    if (entry.Metadata.FindProperty(nameof(IAuditableEntity.CreatedBy)) is not null)
+                        entry.Property(nameof(IAuditableEntity.CreatedBy)).IsModified = false;
                     break;
             }
         }

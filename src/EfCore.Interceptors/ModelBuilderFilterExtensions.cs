@@ -44,6 +44,12 @@ public static class ModelBuilderFilterExtensions
     /// <summary>
     /// Adds <c>e.TenantId == currentTenant</c> to every entity type implementing
     /// <see cref="ITenantEntity"/>; the tenant is resolved per query execution via the provider.
+    /// <para><b>Important:</b> capturing an external <see cref="ITenantProvider"/> freezes the model
+    /// in EF's <see cref="Microsoft.EntityFrameworkCore.Infrastructure.IModelCacheKeyFactory"/> cache — first tenant sticks.
+    /// Register <see cref="Model.TenantModelCacheKeyFactory"/> via
+    /// <c>options.ReplaceService&lt;Microsoft.EntityFrameworkCore.Infrastructure.IModelCacheKeyFactory, Model.TenantModelCacheKeyFactory&gt;()</c>
+    /// or make your <c>DbContext</c> expose <c>CurrentTenantId</c> and use filter
+    /// <c>e => e.TenantId == ((AppDbContext)this).CurrentTenantId</c> inside OnModelCreating.</para>
     /// </summary>
     public static ModelBuilder ApplyTenantFilters(this ModelBuilder modelBuilder, ITenantProvider tenantProvider)
     {

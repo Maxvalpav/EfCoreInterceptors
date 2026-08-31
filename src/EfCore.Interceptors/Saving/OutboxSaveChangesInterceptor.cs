@@ -14,8 +14,9 @@ namespace EfCore.Interceptors.Saving;
 /// A background worker (not included) reads OutboxMessages, delivers them and stamps ProcessedAtUtc.
 /// Requirements: <c>modelBuilder.Entity&lt;OutboxMessage&gt;();</c> must be mapped.
 /// </summary>
-public class OutboxSaveChangesInterceptor(TimeProvider? timeProvider = null) : SaveChangesInterceptor
+public class OutboxSaveChangesInterceptor(TimeProvider? timeProvider = null) : SaveChangesInterceptor, IOrderedInterceptor
 {
+    public int Order => 200;
     private static readonly JsonSerializerOptions JsonOptions = new() { WriteIndented = false };
 
     private readonly TimeProvider _timeProvider = timeProvider ?? TimeProvider.System;

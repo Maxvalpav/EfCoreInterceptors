@@ -46,6 +46,30 @@ public class LongRunningTransactionDetector(
         return base.TransactionRolledBackAsync(transaction, eventData, cancellationToken);
     }
 
+    public override void TransactionFailed(DbTransaction transaction, TransactionErrorEventData eventData)
+    {
+        // Ensure failed/aborted transactions don't linger as warnings; just log duration if exceeds threshold
+        if (eventData.Duration >= _threshold)
+            CheckFailed(eventData);
+        base.TransactionFailed(transaction, eventData);
+    }
+
+    public override Task TransactionFailedAsync(DbTransaction transaction, TransactionErrorEventData eventData, CancellationToken cancellationToken = default)
+    {
+        if (eventData.Duration >= _threshold)
+            CheckFailed(eventData);
+        return base.TransactionFailedAsync(transaction, eventData, cancellationToken);
+    }
+
+    private void CheckFailed(TransactionErrorEventData eventData)
+    {
+        _logger.LogWarning(
+            "Transaction {TransactionId} failed after {Duration:F0}ms (threshold {Threshold:F0}ms).",
+            eventData.TransactionId,
+            eventData.Duration.TotalMilliseconds,
+            _threshold.TotalMilliseconds);
+    }
+
     protected virtual void Check(TransactionEndEventData eventData)
     {
         if (eventData.Duration >= _threshold)

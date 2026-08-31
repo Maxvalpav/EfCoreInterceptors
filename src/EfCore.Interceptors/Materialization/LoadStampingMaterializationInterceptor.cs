@@ -15,7 +15,7 @@ public class LoadStampingMaterializationInterceptor(TimeProvider? clock = null) 
     {
         if (entity is ILoadTimestamped stamped)
         {
-            stamped.LoadedAtUtc = _clock.GetUtcNow().UtcDateTime;
+            stamped.LoadedAtUtc = _clock.GetUtcNow();
         }
 
         return entity;

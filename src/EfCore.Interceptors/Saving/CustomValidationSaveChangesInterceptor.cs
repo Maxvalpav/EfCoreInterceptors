@@ -10,8 +10,9 @@ namespace EfCore.Interceptors.Saving;
 /// saving and aborts with an aggregated <see cref="EntityValidationException"/>.
 /// </summary>
 public class CustomValidationSaveChangesInterceptor(
-    IReadOnlyList<IEntityValidator> validators) : SaveChangesInterceptor
+    IReadOnlyList<IEntityValidator> validators) : SaveChangesInterceptor, IOrderedInterceptor
 {
+    public int Order => -300;
     private readonly IReadOnlyList<IEntityValidator> _validators = validators;
 
     public override InterceptionResult<int> SavingChanges(
