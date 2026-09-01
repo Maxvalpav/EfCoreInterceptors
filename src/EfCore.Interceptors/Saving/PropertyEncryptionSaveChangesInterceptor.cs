@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Reflection;
 using EfCore.Interceptors.Abstractions;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.ChangeTracking;
 using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.EntityFrameworkCore.Metadata;
 
@@ -49,6 +50,7 @@ public class PropertyEncryptionSaveChangesInterceptor(
                 continue;
             }
 
+            // Direct properties
             foreach (var property in entry.Properties)
             {
                 if (property.Metadata.ClrType != typeof(string) ||
@@ -70,6 +72,28 @@ public class PropertyEncryptionSaveChangesInterceptor(
                     property.CurrentValue = _encryptor.Encrypt(plain);
                 }
             }
+
+            // Complex types (EF8+) — entry.ComplexProperties recursive (logic-audit #14, provider-matrix 2.4)
+            foreach (var complex in entry.ComplexProperties)
+            {
+                EncryptComplex(complex, entry.State);
+            }
         }
+    }
+
+    private void EncryptComplex(ComplexPropertyEntry complex, EntityState state)
+    {
+        foreach (var prop in complex.Properties)
+        {
+            if (prop.Metadata.ClrType != typeof(string) || (state == EntityState.Modified && !prop.IsModified))
+                continue;
+            var isEncrypted = _encryptedCache.GetOrAdd(prop.Metadata,
+                p => p.PropertyInfo?.GetCustomAttribute<EncryptedAttribute>() is not null);
+            if (!isEncrypted) continue;
+            if (prop.CurrentValue is string plain)
+                prop.CurrentValue = _encryptor.Encrypt(plain);
+        }
+        foreach (var nested in complex.ComplexProperties)
+            EncryptComplex(nested, state);
     }
 }

@@ -31,21 +31,18 @@ public class ValidationSaveChangesInterceptor : SaveChangesInterceptor, IOrdered
         return base.SavingChangesAsync(eventData, result, cancellationToken);
     }
 
+    public override int SavedChanges(SaveChangesCompletedEventData e, int result){ if(e.Context!=null) ChangeTrackerSnapshot.End(e.Context); return base.SavedChanges(e,result); }
+    public override ValueTask<int> SavedChangesAsync(SaveChangesCompletedEventData e, int result, CancellationToken ct=default){ if(e.Context!=null) ChangeTrackerSnapshot.End(e.Context); return base.SavedChangesAsync(e,result,ct); }
+    public override void SaveChangesFailed(DbContextErrorEventData e){ if(e.Context!=null) ChangeTrackerSnapshot.End(e.Context); base.SaveChangesFailed(e); }
+    public override Task SaveChangesFailedAsync(DbContextErrorEventData e, CancellationToken ct=default){ if(e.Context!=null) ChangeTrackerSnapshot.End(e.Context); return base.SaveChangesFailedAsync(e,ct); }
+
     protected virtual void Validate(DbContext? context)
     {
-        if (context is null)
-        {
-            return;
-        }
-
+        if (context is null) return;
         var failures = new Dictionary<string, string[]>(StringComparer.Ordinal);
-
-        foreach (var entry in context.ChangeTracker.Entries())
+        foreach (var entry in ChangeTrackerSnapshot.GetAll(context))
         {
-            if (entry.State is not (EntityState.Added or EntityState.Modified))
-            {
-                continue;
-            }
+            if (entry.State is not (EntityState.Added or EntityState.Modified)) continue;
 
             var validationContext = new ValidationContext(entry.Entity);
             var results = new List<ValidationResult>();

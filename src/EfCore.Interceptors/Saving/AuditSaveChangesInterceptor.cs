@@ -1,6 +1,8 @@
+using System.Collections.Concurrent;
 using EfCore.Interceptors.Abstractions;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
+using Microsoft.EntityFrameworkCore.Metadata;
 
 namespace EfCore.Interceptors.Saving;
 
@@ -16,6 +18,7 @@ public class AuditSaveChangesInterceptor(
     public int Order => 0;
     private readonly TimeProvider _clock = clock ?? TimeProvider.System;
     private readonly ICurrentUserProvider _users = currentUserProvider ?? StaticCurrentUserProvider.System;
+    private static readonly ConcurrentDictionary<IEntityType, (IProperty? CreatedAt, IProperty? CreatedBy)> _propCache = new();
 
     public override InterceptionResult<int> SavingChanges(
         DbContextEventData eventData, InterceptionResult<int> result)
@@ -33,37 +36,33 @@ public class AuditSaveChangesInterceptor(
         return base.SavingChangesAsync(eventData, result, cancellationToken);
     }
 
+    public override int SavedChanges(SaveChangesCompletedEventData e, int result){ if(e.Context!=null) ChangeTrackerSnapshot.End(e.Context); return base.SavedChanges(e,result); }
+    public override ValueTask<int> SavedChangesAsync(SaveChangesCompletedEventData e, int result, CancellationToken ct=default){ if(e.Context!=null) ChangeTrackerSnapshot.End(e.Context); return base.SavedChangesAsync(e,result,ct); }
+    public override void SaveChangesFailed(DbContextErrorEventData e){ if(e.Context!=null) ChangeTrackerSnapshot.End(e.Context); base.SaveChangesFailed(e); }
+    public override Task SaveChangesFailedAsync(DbContextErrorEventData e, CancellationToken ct=default){ if(e.Context!=null) ChangeTrackerSnapshot.End(e.Context); return base.SaveChangesFailedAsync(e,ct); }
+
     protected virtual void ApplyAuditStamps(DbContext? context)
     {
-        if (context is null)
-        {
-            return;
-        }
-
+        if (context is null) return;
         var now = _clock.GetUtcNow();
         var user = _users.UserName;
-
-        foreach (var entry in context.ChangeTracker.Entries<IAuditableEntity>())
+        foreach (var entry in ChangeTrackerSnapshot.Get<IAuditableEntity>(context))
         {
+            var entity = (IAuditableEntity)entry.Entity;
             switch (entry.State)
             {
                 case EntityState.Added:
-                    // Respect pre-filled import/migration values (logic-audit #2)
-                    if (entry.Entity.CreatedAtUtc == default) entry.Entity.CreatedAtUtc = now;
-                    if (entry.Entity.CreatedBy is null) entry.Entity.CreatedBy = user;
-                    // Updated* for new entities mirrors Created* if not already set
-                    if (entry.Entity.UpdatedAtUtc is null) entry.Entity.UpdatedAtUtc = now;
-                    if (entry.Entity.UpdatedBy is null) entry.Entity.UpdatedBy = user;
+                    if (entity.CreatedAtUtc == default) entity.CreatedAtUtc = now;
+                    if (entity.CreatedBy is null) entity.CreatedBy = user;
+                    if (entity.UpdatedAtUtc is null) entity.UpdatedAtUtc = now;
+                    if (entity.UpdatedBy is null) entity.UpdatedBy = user;
                     break;
-
                 case EntityState.Modified:
-                    entry.Entity.UpdatedAtUtc = now;
-                    entry.Entity.UpdatedBy = user;
-                    // Creation stamps are immutable once written.
-                    if (entry.Metadata.FindProperty(nameof(IAuditableEntity.CreatedAtUtc)) is not null)
-                        entry.Property(nameof(IAuditableEntity.CreatedAtUtc)).IsModified = false;
-                    if (entry.Metadata.FindProperty(nameof(IAuditableEntity.CreatedBy)) is not null)
-                        entry.Property(nameof(IAuditableEntity.CreatedBy)).IsModified = false;
+                    entity.UpdatedAtUtc = now;
+                    entity.UpdatedBy = user;
+                    var cached = _propCache.GetOrAdd(entry.Metadata, t => (t.FindProperty(nameof(IAuditableEntity.CreatedAtUtc)), t.FindProperty(nameof(IAuditableEntity.CreatedBy))));
+                    if (cached.CreatedAt != null) entry.Property(cached.CreatedAt.Name).IsModified = false;
+                    if (cached.CreatedBy != null) entry.Property(cached.CreatedBy.Name).IsModified = false;
                     break;
             }
         }

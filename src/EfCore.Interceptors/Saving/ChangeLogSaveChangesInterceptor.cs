@@ -26,10 +26,11 @@ public class ChangeLogSaveChangesInterceptor(
 
     private readonly TimeProvider _clock = clock ?? TimeProvider.System;
     private readonly ICurrentUserProvider _users = currentUserProvider ?? StaticCurrentUserProvider.System;
-    private readonly System.Runtime.CompilerServices.ConditionalWeakTable<DbContext, PendingHolder> _pendingKeys = new();
+    private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<DbContext, PendingHolder> _pendingKeys = new();
     private sealed class PendingHolder(List<(EntityEntry Source, ChangeLogEntry Log)> pending) { public List<(EntityEntry Source, ChangeLogEntry Log)> Pending { get; } = pending; }
-    private readonly System.Runtime.CompilerServices.ConditionalWeakTable<DbContext, PatchGuard> _isPatching = new();
+    private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<DbContext, PatchGuard> _isPatching = new();
     private sealed class PatchGuard { public bool Value; }
+    public static void Clear(DbContext context) { _pendingKeys.Remove(context); _isPatching.Remove(context); }
 
     public override InterceptionResult<int> SavingChanges(
         DbContextEventData eventData, InterceptionResult<int> result)
@@ -230,15 +231,20 @@ public class ChangeLogSaveChangesInterceptor(
     private static List<Dictionary<string, object?>> BuildDiff(EntityEntry entry)
     {
         // Include owned entities' properties that are stored as part of same table
-        var diff = entry.Properties
-            .Where(p => entry.State != EntityState.Modified || p.IsModified)
-            .Select(p => new Dictionary<string, object?>
+        var diff = new List<Dictionary<string, object?>>();
+        foreach (var p in entry.Properties)
+        {
+            if (entry.State == EntityState.Modified && !p.IsModified) continue;
+            diff.Add(new Dictionary<string, object?>
             {
                 ["property"] = p.Metadata.Name,
                 ["old"] = entry.State == EntityState.Added ? null : p.OriginalValue,
                 ["new"] = entry.State == EntityState.Deleted ? null : p.CurrentValue
-            })
-            .ToList();
+            });
+        }
+        // Complex types (EF8+) recursive — provider-matrix 2.4, logic-audit #6
+        foreach (var complex in entry.ComplexProperties)
+            AddComplexDiff(complex, entry.State, diff);
         // Owned value-objects (e.g. Owned<T>) are separate entries that would otherwise be missed
         foreach (var nav in entry.References)
         {
@@ -248,7 +254,24 @@ public class ChangeLogSaveChangesInterceptor(
                 diff.AddRange(BuildDiff(target));
             }
         }
+        // JSON columns: single property blob — still log as-is; caller can mask via [Sensitive] later
         return diff;
+    }
+
+    private static void AddComplexDiff(ComplexPropertyEntry complex, EntityState state, List<Dictionary<string, object?>> diff)
+    {
+        foreach (var p in complex.Properties)
+        {
+            if (state == EntityState.Modified && !p.IsModified) continue;
+            diff.Add(new Dictionary<string, object?>
+            {
+                ["property"] = $"{complex.Metadata.Name}.{p.Metadata.Name}",
+                ["old"] = state == EntityState.Added ? null : p.OriginalValue,
+                ["new"] = state == EntityState.Deleted ? null : p.CurrentValue
+            });
+        }
+        foreach (var nested in complex.ComplexProperties)
+            AddComplexDiff(nested, state, diff);
     }
 
     private static string SerializeKey(EntityEntry entry)

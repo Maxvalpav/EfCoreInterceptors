@@ -14,6 +14,7 @@ public class LongRunningTransactionDetector(
     TimeSpan threshold,
     ILoggerFactory? loggerFactory = null) : DbTransactionInterceptor
 {
+    public static void Clear(Microsoft.EntityFrameworkCore.DbContext context) { /* no per-context state — watchdog is timer-free */ }
     private readonly TimeSpan _threshold = threshold;
     private readonly ILogger _logger =
         loggerFactory?.CreateLogger("EfCore.Interceptors.LongTransaction") ?? NullLogger.Instance;

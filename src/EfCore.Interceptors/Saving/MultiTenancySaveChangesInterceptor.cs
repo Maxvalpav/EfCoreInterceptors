@@ -32,44 +32,36 @@ public class MultiTenancySaveChangesInterceptor(ITenantProvider tenantProvider) 
         return base.SavingChangesAsync(eventData, result, cancellationToken);
     }
 
+    public override int SavedChanges(SaveChangesCompletedEventData e, int r){ if(e.Context!=null) ChangeTrackerSnapshot.End(e.Context); return base.SavedChanges(e,r); }
+    public override ValueTask<int> SavedChangesAsync(SaveChangesCompletedEventData e, int r, CancellationToken ct=default){ if(e.Context!=null) ChangeTrackerSnapshot.End(e.Context); return base.SavedChangesAsync(e,r,ct); }
+    public override void SaveChangesFailed(DbContextErrorEventData e){ if(e.Context!=null) ChangeTrackerSnapshot.End(e.Context); base.SaveChangesFailed(e); }
+    public override Task SaveChangesFailedAsync(DbContextErrorEventData e, CancellationToken ct=default){ if(e.Context!=null) ChangeTrackerSnapshot.End(e.Context); return base.SaveChangesFailedAsync(e,ct); }
+
     protected virtual void ApplyTenantRules(DbContext? context)
     {
-        if (context is null)
-        {
-            return;
-        }
-
+        if (context is null) return;
         var currentTenant = _tenants.CurrentTenantId;
-
-        foreach (var entry in context.ChangeTracker.Entries<ITenantEntity>())
+        foreach (var entry in ChangeTrackerSnapshot.Get<ITenantEntity>(context))
         {
+            var entity = (ITenantEntity)entry.Entity;
+            if (entry.State == EntityState.Modified)
+            {
+                var prop = entry.Property(nameof(ITenantEntity.TenantId));
+                if (!Equals(prop.OriginalValue, prop.CurrentValue))
+                    throw new CrossTenantAccessException($"TenantId is immutable for '{entry.Metadata.ClrType.Name}'. Original='{prop.OriginalValue}', Current='{prop.CurrentValue}'.");
+            }
             switch (entry.State)
             {
                 case EntityState.Added:
-                    if (currentTenant is null)
-                    {
-                        throw new CrossTenantAccessException(
-                            $"Cannot insert '{entry.Metadata.ClrType.Name}' without current tenant. CurrentTenantId is null.");
-                    }
-
-                    // Prevent privilege escalation: if entity already has a different tenant set, reject
-                    if (entry.Entity.TenantId is not null && !string.Equals(entry.Entity.TenantId, currentTenant, StringComparison.Ordinal))
-                    {
-                        throw new CrossTenantAccessException(
-                            $"Entity '{entry.Metadata.ClrType.Name}' pre-set to tenant '{entry.Entity.TenantId}', but current tenant is '{currentTenant}'.");
-                    }
-
-                    entry.Entity.TenantId = currentTenant;
+                    if (currentTenant is null) throw new CrossTenantAccessException($"Cannot insert '{entry.Metadata.ClrType.Name}' without current tenant. CurrentTenantId is null.");
+                    if (entity.TenantId is not null && !string.Equals(entity.TenantId, currentTenant, StringComparison.Ordinal))
+                        throw new CrossTenantAccessException($"Entity '{entry.Metadata.ClrType.Name}' pre-set to tenant '{entity.TenantId}', but current tenant is '{currentTenant}'.");
+                    entity.TenantId = currentTenant;
                     break;
-
-                case EntityState.Modified when !string.Equals(entry.Entity.TenantId, currentTenant, StringComparison.Ordinal):
-                    throw new CrossTenantAccessException(
-                        $"Entity '{entry.Metadata.ClrType.Name}' belongs to tenant '{entry.Entity.TenantId}', " +
-                        $"but the current tenant is '{currentTenant}'.");
-
-                case EntityState.Deleted when !string.Equals(entry.Entity.TenantId, currentTenant, StringComparison.Ordinal):
-                    throw new CrossTenantAccessException(
-                        $"Cannot delete '{entry.Metadata.ClrType.Name}' of tenant '{entry.Entity.TenantId}' from current tenant '{currentTenant}'.");
+                case EntityState.Modified when !string.Equals(entity.TenantId, currentTenant, StringComparison.Ordinal):
+                    throw new CrossTenantAccessException($"Entity '{entry.Metadata.ClrType.Name}' belongs to tenant '{entity.TenantId}', but the current tenant is '{currentTenant}'.");
+                case EntityState.Deleted when !string.Equals(entity.TenantId, currentTenant, StringComparison.Ordinal):
+                    throw new CrossTenantAccessException($"Cannot delete '{entry.Metadata.ClrType.Name}' of tenant '{entity.TenantId}' from current tenant '{currentTenant}'.");
             }
         }
     }

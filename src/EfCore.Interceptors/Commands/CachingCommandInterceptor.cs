@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Data;
 using System.Data.Common;
+using EfCore.Interceptors.Abstractions;
 using Microsoft.EntityFrameworkCore.Diagnostics;
 
 namespace EfCore.Interceptors.Commands;
@@ -15,45 +16,34 @@ namespace EfCore.Interceptors.Commands;
 /// </summary>
 public class CachingCommandInterceptor : DbCommandInterceptor, Microsoft.EntityFrameworkCore.Diagnostics.IDbTransactionInterceptor
 {
-    private sealed class CacheEntry(CachedQueryResult result, DateTimeOffset expiresAtUtc)
-    {
-        public CachedQueryResult Result { get; } = result;
-        public DateTimeOffset ExpiresAtUtc { get; set; } = expiresAtUtc;
-    }
-
-    private readonly ConcurrentDictionary<string, CacheEntry> _cache = new();
+    private readonly IQueryCacheStore _store;
     private readonly TimeSpan _timeToLive;
     private readonly bool _skipInsideTransactions;
     private readonly bool _invalidateOnWrites;
-    private readonly int _maxEntries;
     private volatile bool _pendingInvalidation;
 
     public CachingCommandInterceptor(
         TimeSpan? timeToLive = null,
         bool skipInsideTransactions = true,
         bool invalidateOnWrites = false,
-        int maxEntries = 1000)
+        int maxEntries = 1000,
+        IQueryCacheStore? store = null)
     {
         _timeToLive = timeToLive ?? TimeSpan.FromSeconds(30);
         _skipInsideTransactions = skipInsideTransactions;
         _invalidateOnWrites = invalidateOnWrites;
-        _maxEntries = Math.Max(1, maxEntries);
+        _store = store ?? new MemoryQueryCacheStore(_timeToLive, maxEntries);
     }
 
     /// <summary>Number of currently cached query results.</summary>
-    public int Count => _cache.Count;
+    public int Count => _store.Count;
 
     /// <summary>Drops every cached query result.</summary>
-    public void InvalidateAll() => _cache.Clear();
+    public void InvalidateAll() => _store.Clear();
+    public static void Clear(Microsoft.EntityFrameworkCore.DbContext context) { /* global cache — per-context clear no-op; pool does not leak per-context state */ }
 
     /// <summary>Drops cached results whose SQL contains the given fragment (e.g. a table name).</summary>
-    public void Invalidate(string sqlFragment)
-    {
-        foreach (var key in _cache.Keys.Where(k => k.Contains(sqlFragment, StringComparison.OrdinalIgnoreCase)))
-        {
-            _cache.TryRemove(key, out _);
-        }
-    }
+    public void Invalidate(string sqlFragment) => _store.Invalidate(sqlFragment);
 
     public override InterceptionResult<DbDataReader> ReaderExecuting(
         DbCommand command, CommandEventData eventData, InterceptionResult<DbDataReader> result)
@@ -186,32 +176,7 @@ public class CachingCommandInterceptor : DbCommandInterceptor, Microsoft.EntityF
         return default;
     }
 
-    private void AddOrEvict(string key, CachedQueryResult snapshot)
-    {
-        if (_cache.Count >= _maxEntries)
-        {
-            // Evict expired entries first
-            foreach (var kvp in _cache)
-            {
-                if (kvp.Value.ExpiresAtUtc <= DateTimeOffset.UtcNow)
-                {
-                    _cache.TryRemove(kvp.Key, out _);
-                }
-            }
-
-            // Still over limit: remove oldest arbitrary entry
-            if (_cache.Count >= _maxEntries)
-            {
-                var first = _cache.Keys.FirstOrDefault();
-                if (first is not null)
-                {
-                    _cache.TryRemove(first, out _);
-                }
-            }
-        }
-
-        _cache[key] = new CacheEntry(snapshot, DateTimeOffset.UtcNow.Add(_timeToLive));
-    }
+    private void AddOrEvict(string key, CachedQueryResult snapshot) => _store.Set(key, snapshot, _timeToLive);
 
     private bool Cacheable(CommandEventData eventData, DbCommand command)
         => IsSelect(command.CommandText)
@@ -249,19 +214,11 @@ public class CachingCommandInterceptor : DbCommandInterceptor, Microsoft.EntityF
     private bool TryGet(string key, out CachedQueryResult result)
     {
         result = null!;
-
-        if (!_cache.TryGetValue(key, out var entry))
+        if (_store.TryGet(key, out var cached) && cached != null)
         {
-            return false;
-        }
-
-        if (entry.ExpiresAtUtc > DateTimeOffset.UtcNow)
-        {
-            result = entry.Result;
+            result = cached;
             return true;
         }
-
-        _cache.TryRemove(key, out _);
         return false;
     }
 
@@ -279,27 +236,25 @@ public class CachingCommandInterceptor : DbCommandInterceptor, Microsoft.EntityF
             }
             else if (val is byte[] bytes)
             {
-                var h = System.Security.Cryptography.SHA256.HashData(bytes);
-                valStr = $"[bytes:{bytes.Length}:hash:{Convert.ToHexString(h)[..16]}]";
+                var h = System.IO.Hashing.XxHash3.HashToUInt64(bytes);
+                valStr = $"[bytes:{bytes.Length}:xxh:{h:X16}]";
             }
             else
             {
                 var s = Convert.ToString(val, System.Globalization.CultureInfo.InvariantCulture) ?? string.Empty;
                 if (s.Length > 256)
                 {
-                    // Use hash to prevent collisions on same prefix
-                    var hash = System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(s));
-                    valStr = $"[len:{s.Length}:hash:{Convert.ToHexString(hash)[..8]}:{s[..64]}...]";
+                    var hash = System.IO.Hashing.XxHash3.HashToUInt64(System.Text.Encoding.UTF8.GetBytes(s));
+                    valStr = $"[len:{s.Length}:xxh:{hash:X16}:{s[..64]}...]";
                 }
                 else
                 {
-                    valStr = s;
+                    // Include DbType to avoid '1' vs '1.0' collision (security-audit #11)
+                    valStr = $"{parameter.DbType}:{s}";
                 }
             }
-
             sb.Append('|').Append(parameter.ParameterName).Append('=').Append(valStr);
         }
-
         return sb.ToString();
     }
 

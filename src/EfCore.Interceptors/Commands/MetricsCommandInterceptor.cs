@@ -22,10 +22,14 @@ public class MetricsCommandInterceptor : DbCommandInterceptor
         _meter = meterName is null && version is null
             ? Observability.SharedMeter.Meter
             : new Meter(meterName ?? "EfCore.Interceptors", version ?? "1.0.0");
+        // OTel semconv: db.client.operation.duration in seconds (api-design-audit #7), keep ms compat as secondary
         _durationMs = _meter.CreateHistogram<double>("ef.command.duration", unit: "ms");
         _executed = _meter.CreateCounter<long>("ef.command.executed");
         _failed = _meter.CreateCounter<long>("ef.command.failed");
+        // Secondary OTel histogram in seconds for semconv compliance
+        _durationS = _meter.CreateHistogram<double>("db.client.operation.duration", unit: "s");
     }
+    private readonly Histogram<double> _durationS;
 
     public override DbDataReader ReaderExecuted(DbCommand command, CommandExecutedEventData eventData, DbDataReader result)
     {
@@ -87,6 +91,7 @@ public class MetricsCommandInterceptor : DbCommandInterceptor
     {
         var tag = new KeyValuePair<string, object?>("operation", eventData.ExecuteMethod.ToString());
         _durationMs.Record(Math.Max(0.01, eventData.Duration.TotalMilliseconds), tag);
+        _durationS.Record(Math.Max(0.00001, eventData.Duration.TotalSeconds), tag);
         _executed.Add(1, tag);
     }
 }

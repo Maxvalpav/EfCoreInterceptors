@@ -15,7 +15,8 @@ namespace EfCore.Interceptors.Connections;
 ///   <item>SQLite: PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL;</item>
 /// </list>
 /// Statements execute outside any EF pipeline (plain DbCommand), so they must be valid
-/// for the target provider.
+/// for the target provider. SECURITY: do not interpolate user input via string concatenation — use parameterized
+/// resolver or DbCommand parameters to avoid session-level SQL injection (security-audit #12).
 /// </summary>
 public class SessionInitConnectionInterceptor : DbConnectionInterceptor
 {

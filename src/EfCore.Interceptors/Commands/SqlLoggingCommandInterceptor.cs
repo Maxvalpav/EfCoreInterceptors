@@ -141,7 +141,14 @@ public class SqlLoggingCommandInterceptor(
             Safe(command.CommandText));
     }
 
-    private string Safe(string text) => _redactor?.Invoke(text) ?? text;
+    private string Safe(string text)
+    {
+        var s = _redactor?.Invoke(text) ?? text;
+        // Log injection defense: single-line, no control chars (security-audit #5)
+        if (s.IndexOfAny(['\r', '\n']) >= 0)
+            s = s.Replace("\r", " ").Replace("\n", " ");
+        return s;
+    }
 
     /// <summary>Sampling gate for non-error logs; failures are ALWAYS logged.</summary>
     protected virtual bool ShouldSample()

@@ -7,6 +7,7 @@
     <Project Path="samples/WebApiSample/WebApiSample.csproj" />
   </Folder>
   <Folder Name="/src/">
+    <Project Path="src/EfCore.Interceptors.Analyzers/EfCore.Interceptors.Analyzers.csproj" />
     <Project Path="src/EfCore.Interceptors.MediatR/EfCore.Interceptors.MediatR.csproj" />
     <Project Path="src/EfCore.Interceptors/EfCore.Interceptors.csproj" />
   </Folder>

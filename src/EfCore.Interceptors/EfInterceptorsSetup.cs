@@ -27,6 +27,17 @@ public sealed class EfInterceptorsSetup
     {
         if (_interceptors.Count > 0)
         {
+            // provider-matrix: warn if non-relational provider gets command interceptors
+            var hasCommandInterceptor = _interceptors.Any(i => i is DbCommandInterceptor);
+            if (hasCommandInterceptor)
+            {
+                var extensionNames = string.Join(",", builder.Options.Extensions.Select(e => e.GetType().Name));
+                if (extensionNames.Contains("Cosmos", StringComparison.OrdinalIgnoreCase) || extensionNames.Contains("InMemory", StringComparison.OrdinalIgnoreCase))
+                {
+                    // Best-effort warning — does not throw, as tests may use SQLite with InMemory tag
+                    System.Diagnostics.Debug.WriteLine($"[EfCore.Interceptors] Warning: command interceptors registered with non-relational provider ({extensionNames}) — they will never be invoked. See docs/provider-matrix.md");
+                }
+            }
             // Deterministic save-pipeline order: Validation → Guards → MultiTenancy → SoftDelete → Audit → Version → ChangeLog → Outbox → DomainEvents → Metrics
             var ordered = _interceptors
                 .OrderBy(i => (i as IOrderedInterceptor)?.Order ?? 0)
@@ -110,6 +121,12 @@ public sealed class EfInterceptorsSetup
         => Add(overwriteExisting
             ? new OverwriteIdentityResolutionInterceptor()
             : new IgnoreIncomingIdentityResolutionInterceptor());
+
+    /// <summary>Resolves identity conflicts via explicit mode (avoids boolean trap).</summary>
+    public EfInterceptorsSetup WithIdentityResolution(Tracking.IdentityResolutionMode mode)
+        => mode == Tracking.IdentityResolutionMode.Overwrite
+            ? Add(new OverwriteIdentityResolutionInterceptor())
+            : Add(new IgnoreIncomingIdentityResolutionInterceptor());
 
     // ---------- Wave 2: advanced scenarios ----------
 
@@ -376,6 +393,22 @@ public sealed class EfInterceptorsSetup
     /// <summary>HybridCache second-level cache (shared IMemoryCache).</summary>
     public EfInterceptorsSetup WithHybridCache(Microsoft.Extensions.Caching.Memory.IMemoryCache cache, TimeSpan? ttl = null, bool skipInsideTransactions = true)
         => Add(new Commands.HybridCacheCommandInterceptor(cache, ttl, skipInsideTransactions));
+
+    /// <summary>Second-level cache with custom store (e.g. Redis via DistributedQueryCacheStore).</summary>
+    public EfInterceptorsSetup WithSecondLevelCache(Abstractions.IQueryCacheStore store, TimeSpan? timeToLive = null, bool skipInsideTransactions = true, bool invalidateOnWrites = false)
+        => Add(new Commands.CachingCommandInterceptor(timeToLive, skipInsideTransactions, invalidateOnWrites, 1000, store));
+
+    /// <summary>Distributed cache (IDistributedCache/Redis) for second-level cache.</summary>
+    public EfInterceptorsSetup WithDistributedCache(Microsoft.Extensions.Caching.Distributed.IDistributedCache cache, TimeSpan? timeToLive = null)
+        => Add(new Commands.CachingCommandInterceptor(timeToLive, true, false, 1000, new Abstractions.DistributedQueryCacheStore(cache, timeToLive)));
+
+    /// <summary>Guards ExecuteUpdate/ExecuteDelete that bypass SaveChanges interceptors (soft-delete, encryption, audit).</summary>
+    public EfInterceptorsSetup WithBulkOperationGuard(Commands.BulkOperationPolicy policy = Commands.BulkOperationPolicy.Throw, Microsoft.Extensions.Logging.ILoggerFactory? loggerFactory = null)
+        => Add(new Commands.BulkOperationGuardInterceptor(policy, loggerFactory));
+
+    /// <summary>Guards ExecuteUpdate/ExecuteDelete with explicit guarded table set.</summary>
+    public EfInterceptorsSetup WithBulkOperationGuard(Commands.BulkOperationPolicy policy, IReadOnlySet<string> guardedTables, Microsoft.Extensions.Logging.ILoggerFactory? loggerFactory = null)
+        => Add(new Commands.BulkOperationGuardInterceptor(policy, guardedTables, loggerFactory));
 
 }
 

@@ -127,6 +127,6 @@ public partial class ConnectionLifecycleLoggingInterceptor(
         return SecretsRegex().Replace(connectionString, "$1=***");
     }
 
-    [GeneratedRegex(@"(?i)\b(password|pwd|secret|token|key|auth)\s*=\s*[^;]*")]
+    [GeneratedRegex(@"(?i)\b(password|pwd|secret|token|key|auth)\s*=\s*[^;]*", RegexOptions.None, 100)]
     private static partial Regex SecretsRegex();
 }

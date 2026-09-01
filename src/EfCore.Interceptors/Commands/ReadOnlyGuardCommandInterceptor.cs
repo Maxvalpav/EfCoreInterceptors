@@ -93,7 +93,7 @@ public partial class ReadOnlyGuardCommandInterceptor(
 
     [GeneratedRegex(
         @"^\s*(?:with\b[\s\S]*?\)\s*)?(insert|update|delete|merge|truncate|drop|alter|create)\b",
-        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant, 100)]
     private static partial Regex WriteRegex();
 }
 

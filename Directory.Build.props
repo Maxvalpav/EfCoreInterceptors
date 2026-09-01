@@ -5,6 +5,12 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
+    <WarningsAsErrors Condition="'$(TargetFramework)' == 'net10.0' and '$(IsPackable)' == 'true'">CS8600;CS8602;CS8603;CS8604;CS8618;CS8625</WarningsAsErrors>
+    <AnalysisMode>All</AnalysisMode>
+    <EnforceCodeStyleInBuild>false</EnforceCodeStyleInBuild>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <NoWarn>$(NoWarn);CS1591;RS0037;RS0016</NoWarn>
+    <IsAotCompatible>true</IsAotCompatible>
     <ContinuousIntegrationBuild Condition="'$(CI)' == 'true'">true</ContinuousIntegrationBuild>
     <Deterministic>true</Deterministic>
     <PublishRepositoryUrl>true</PublishRepositoryUrl>
@@ -15,6 +21,7 @@
 
   <ItemGroup Condition="'$(IsPackable)' == 'true'">
     <PackageReference Include="Microsoft.SourceLink.GitHub" Version="8.0.0" PrivateAssets="All" />
+    <PackageReference Include="Microsoft.CodeAnalysis.PublicApiAnalyzers" Version="4.14.0" PrivateAssets="All" />
   </ItemGroup>
 </Project>
 

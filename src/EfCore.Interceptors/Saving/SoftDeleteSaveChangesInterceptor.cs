@@ -34,37 +34,26 @@ public class SoftDeleteSaveChangesInterceptor(
         return base.SavingChangesAsync(eventData, result, cancellationToken);
     }
 
+    public override int SavedChanges(SaveChangesCompletedEventData e, int result){ if(e.Context!=null) ChangeTrackerSnapshot.End(e.Context); return base.SavedChanges(e,result); }
+    public override ValueTask<int> SavedChangesAsync(SaveChangesCompletedEventData e, int result, CancellationToken ct=default){ if(e.Context!=null) ChangeTrackerSnapshot.End(e.Context); return base.SavedChangesAsync(e,result,ct); }
+    public override void SaveChangesFailed(DbContextErrorEventData e){ if(e.Context!=null) ChangeTrackerSnapshot.End(e.Context); base.SaveChangesFailed(e); }
+    public override Task SaveChangesFailedAsync(DbContextErrorEventData e, CancellationToken ct=default){ if(e.Context!=null) ChangeTrackerSnapshot.End(e.Context); return base.SaveChangesFailedAsync(e,ct); }
+
     protected virtual void ConvertDeletes(DbContext? context)
     {
-        if (context is null)
-        {
-            return;
-        }
-
+        if (context is null) return;
         var now = _clock.GetUtcNow();
         var user = _users.UserName;
-
-        foreach (var entry in context.ChangeTracker.Entries<ISoftDeletableEntity>())
+        foreach (var entry in ChangeTrackerSnapshot.Get<ISoftDeletableEntity>(context))
         {
-            if (entry.State != EntityState.Deleted)
-            {
-                continue;
-            }
-
-            // Idempotency: already soft-deleted -> keep as unchanged
-            if (entry.Entity.IsDeleted)
-            {
-                entry.State = EntityState.Unchanged;
-                continue;
-            }
-
+            if (entry.State != EntityState.Deleted) continue;
+            var entity = (ISoftDeletableEntity)entry.Entity;
+            if (entity.IsDeleted) { entry.State = EntityState.Unchanged; continue; }
             entry.State = EntityState.Modified;
-            entry.Entity.IsDeleted = true;
-            entry.Entity.DeletedAtUtc = now;
-            entry.Entity.DeletedBy = user;
-
-            // Do not touch Created* stamps if entity is also auditable
-            if (entry.Entity is IAuditableEntity)
+            entity.IsDeleted = true;
+            entity.DeletedAtUtc = now;
+            entity.DeletedBy = user;
+            if (entity is IAuditableEntity)
             {
                 if (entry.Metadata.FindProperty(nameof(IAuditableEntity.CreatedAtUtc)) is not null)
                     entry.Property(nameof(IAuditableEntity.CreatedAtUtc)).IsModified = false;
@@ -72,9 +61,7 @@ public class SoftDeleteSaveChangesInterceptor(
                     entry.Property(nameof(IAuditableEntity.CreatedBy)).IsModified = false;
             }
         }
-
-        // Cascade safety: children without soft-delete that were cascade-deleted become orphans
-        var orphans = context.ChangeTracker.Entries()
+        var orphans = ChangeTrackerSnapshot.GetAll(context)
             .Where(e => e.State == EntityState.Deleted && e.Entity is not ISoftDeletableEntity)
             .ToList();
         if (orphans.Count > 0)

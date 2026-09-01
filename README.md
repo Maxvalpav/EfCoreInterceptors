@@ -363,18 +363,59 @@ dotnet run -c Release --project benchmarks/EfCore.Interceptors.Benchmarks --filt
 dotnet pack src/EfCore.Interceptors -c Release -o artifacts
 # artifacts/EfCore.Interceptors.<version>.nupkg (+ snupkg), README внутри пакета
 ```
+## Ограничения bulk-операций — критично
+
+`ExecuteUpdate` / `ExecuteDelete` (EF Core 7+) транслируются напрямую в `UPDATE … WHERE` / `DELETE … WHERE` и **не проходят через `ISaveChangesInterceptor`**.
+Следовательно они обходят: soft delete → физическое удаление, шифрование → запись plaintext, guards/валидацию/аудит/ChangeLog/Outbox/domain events — всё молча.
+
+| Интерсептор | Что происходит при bulk | Тяжесть |
+|---|---|---|
+| `SoftDeleteSaveChangesInterceptor` | Физическое удаление | 🔴 потеря данных |
+| `PropertyEncryptionSaveChangesInterceptor` | Открытый текст в колонке шифротекста | 🔴 утечка/порча |
+| `DeleteGuard` / `ImmutableGuard` | Удаление без исключения | 🔴 комплаенс |
+| `MultiTenancySaveChangesInterceptor` | `SetProperty(e=>e.TenantId,"other")` передаст строки чужому тенанту | 🔴 безопасность |
+| `ChangeLog` / `Audit` / `Outbox` / `DomainEvents` / `Validation` | Молча не отрабатывают | 🟠 |
+
+Защита:
+```csharp
+// Уровень 1 — guard (в библиотеке уже есть):
+.UseEfInterceptors(s => s.WithBulkOperationGuard(BulkOperationPolicy.Throw))
+
+// Уровень 2 — strict policy на этапе компиляции LINQ:
+.UseEfInterceptors(s => s.WithStrictQueryPolicy(forbidExecuteDelete: true, forbidExecuteUpdate: true))
+
+// Безопасные альтернативы — библиотечные хелперы (todo vNext):
+// await db.Orders.Where(...).ExecuteSoftDeleteAsync(users, timeProvider, ct);
+```
+Подробно: `docs/bulk-operations-gap.md`.
+
+## Провайдеры и совместимость
+
+| Провайдер | Примечание |
+|---|---|
+| SQL Server, PostgreSQL, SQLite, MySQL/Pomelo | Полная поддержка реляционных интерсепторов |
+| Cosmos (нереляционный) | `IDbCommandInterceptor`/`IDbConnectionInterceptor`/`IDbTransactionInterceptor` не вызываются — работают только SaveChanges/Materialization/IdentityResolution |
+| InMemory | Не реляционный — команда-тесты на нём бессмысленны для `SqlLogging`/`Caching`/`N+1` |
+
+Фичи EF Core:
+- **`AddDbContextPool` ломает состояние по `DbContext`** (доменные события/outbox счётчики перетекают между запросами). Реализуйте `IResettableService.ResetState()` на контексте или документируйте несовместимость. См. `docs/provider-matrix.md`.
+- **Compiled models** фиксируют query filters — tenant-фильтр, зависящий от рантайма, не сработает.
+- **Complex types** (`entry.ComplexProperties`) теперь учитываются в аудите/ChangeLog/шифровании (рекурсивный обход).
+- **Шифрование**: payload v1 = `0x01|nonce|tag|cipher` + AAD (`table|column|pk`) против cross-column swap; legacy payload без версии дешифруется по fallback.
+
 ## Нюансы и рекомендации
 
-- **Времена жизни.** Интерсепторы регистрируются на каждый `DbContext`; сами классы stateless и потокобезопасны (кроме документированных буферов доменных событий/outbox, ключуемых по экземпляру контекста). Один экземпляр можно шарить между контекстами — так работает инвалидация кэша (`WithSecondLevelCache` + общий `CachingCommandInterceptor`).
+- **Времена жизни.** Интерсепторы регистрируются на каждый `DbContext`; сами классы stateless и потокобезопасны (кроме документированных буферов доменных событий/outbox, ключуемых по экземпляру контекста через `ConditionalWeakTable`). Один экземпляр можно шарить между контекстами — так работает инвалидация кэша (`WithSecondLevelCache` + общий `CachingCommandInterceptor`).
+- **Мультитенантность**: `ApplyTenantFilters(provider)` захватывает провайдера в кэш модели — первый тенант «залипает». Регистрируйте `TenantModelCacheKeyFactory` (`options.ReplaceService<IModelCacheKeyFactory, TenantModelCacheKeyFactory>()`) или используйте фильтр через свойство контекста `e => e.TenantId == CurrentTenantId`. См. `docs/security-audit.md#1`. Модификация `TenantId` после создания запрещена (immutable) — `CrossTenantAccessException` при `OriginalValue != CurrentValue`.
 - **Soft delete не фильтрует чтения.** Обязательно добавляйте глобальный query filter; иначе удалённые строки будут видны. `IgnoreQueryFilters()` также покажет их (удобно для корзины) — а `WithStrictQueryPolicy` может такие вызовы запрещать.
-- **Доменные события** диспетчеризуются строго после коммита (at-least-once внутри процесса). Хендлер упал — получите `InvalidOperationException`; данные уже сохранены. Для гарантированной доставки используйте `WithOutbox()`: события попадают в таблицу в той же транзакции.
-- **ChangeLog/Outbox** требуют замапленных сущностей `ChangeLogEntry`/`OutboxMessage`. Дифф пишется по всем свойствам Added/Deleted и по изменённым для Modified.
-- **Кэш второго уровня** — in-memory, на процесс. Включите `invalidateOnWrites: true`, чтобы записи автоматически чистили кэш, либо зовите `Invalidate*()` после внешних изменений. Внутри явных транзакций кэш по умолчанию обойдён.
-- **QueryHints** модифицируют текст SQL — тестируйте на целевом провайдере (хинт SQL Server на SQLite даст синтаксическую ошибку; используйте комментарии как в примере).
-- **ReadOnlyGuard / StrictQueryPolicy** — эвристики. Guard смотрит на текст SQL (комментарий со словом DELETE даст ложное срабатывание — передайте свой `isWriteCommand`); policy проверяет формы запросов при компиляции, т.е. один раз на каждый уникальный shape.
-- **Шифрование `[Encrypted]`** хранит в колонке шифротекст: поиск по равенству/LIKE по зашифрованным колонкам невозможен (nonce случайный). `AesGcmPropertyValueEncryptor` — стартовая точка; для продакшена берите envelope-шифрование с внешним KMS. Шифрование выполняется на клиенте.
+- **Доменные события** диспетчеризуются строго после коммита (at-least-once внутри процесса). Хендлер упал — получите `InvalidOperationException`; данные уже сохранены. Для гарантированной доставки используйте `WithOutbox()`: события попадают в таблицу в той же транзакции. Outbox processor использует `LockedUntilUtc/AttemptCount` + `FOR UPDATE SKIP LOCKED`-подобный claim для multi-instance.
+- **ChangeLog/Outbox** требуют замапленных сущностей `ChangeLogEntry`/`OutboxMessage`. Дифф пишется по всем свойствам Added/Deleted и по изменённым для Modified (включая owned). Для `Added` с DB-генерируемым PK ключ патчится вторым `SaveChanges` в той же транзакции.
+- **Кэш второго уровня** — in-memory, на процесс, с `SizeLimit` и инвалидацией на `TransactionCommitted`. Включите `invalidateOnWrites: true`, чтобы записи автоматически чистили кэш после коммита, либо зовите `Invalidate*()` после внешних изменений. Внутри явных транзакций кэш по умолчанию обойдён. В multi-instance используйте `IQueryCacheStore` / Redis.
+- **QueryHints** модифицируют текст SQL — тестируйте на целевом провайдере (хинт SQL Server на SQLite даст синтаксическую ошибку; используйте комментарии как в примере). Батчи с несколькими statement не патчатся.
+- **ReadOnlyGuard / StrictQueryPolicy** — guard теперь смотрит на `CommandSource` (SaveChanges/Migrations/BulkUpdate) и только для `ExecuteSqlRaw` — на текст через `[GeneratedRegex]` (best-effort). Policy проверяет формы запросов при компиляции.
+- **Шифрование `[Encrypted]`** хранит в колонке шифротекст: поиск по равенству/LIKE по зашифрованным колонкам невозможен (nonce случайный). `AesGcmPropertyValueEncryptor` v1: `version|nonce|tag|cipher` + optional AAD (`table|column|pk`) против перестановки шифротекстов; legacy payload дешифруется fallback. Для продакшена берите envelope-шифрование с внешним KMS. Шифрование выполняется на клиенте.
 - **ForcedIsolationLevel** применяется ко всем транзакциям контекста, включая неявные SaveChanges — оценивайте влияние на блокировки.
-- **Аудит** доверяет `ICurrentUserProvider`. В веб-приложении реализуйте его поверх `IHttpContextAccessor` и регистрируйте интерсептор как Scoped.
+- **Аудит** доверяет `ICurrentUserProvider`. В веб-приложении реализуйте его поверх `IHttpContextAccessor` и регистрируйте интерсептор как Scoped. `WithIdentityResolution(IdentityResolutionMode.Overwrite)` предпочтительнее `bool` overload (избегайте boolean trap). `CreatedAtUtc` не затирается при импорте, если уже заполнено; `UpdatedAtUtc` — `DateTimeOffset?`.
 - Interceptor'ы выполняются синхронно в горячем пути запросов — избегайте тяжёлой работы.
 
 ## Структура решения

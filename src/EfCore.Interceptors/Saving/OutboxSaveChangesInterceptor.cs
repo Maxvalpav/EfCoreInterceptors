@@ -20,7 +20,8 @@ public class OutboxSaveChangesInterceptor(TimeProvider? timeProvider = null) : S
     private static readonly JsonSerializerOptions JsonOptions = new() { WriteIndented = false };
 
     private readonly TimeProvider _timeProvider = timeProvider ?? TimeProvider.System;
-    private readonly ConditionalWeakTable<DbContext, PendingHolder> _pending = new();
+    private static readonly ConditionalWeakTable<DbContext, PendingHolder> _pending = new();
+    public static void Clear(DbContext context) => _pending.Remove(context);
     private sealed class PendingHolder(List<(IHasDomainEvents Aggregate, IReadOnlyList<IDomainEvent> Events)> snapshot)
     {
         public List<(IHasDomainEvents Aggregate, IReadOnlyList<IDomainEvent> Events)> Snapshot { get; } = snapshot;

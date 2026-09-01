@@ -1,0 +1,9 @@
+{
+  "stryker-config": {
+    "reporters": ["html", "progress"],
+    "logLevel": "info",
+    "mutate": ["src/EfCore.Interceptors/Saving/*.cs", "src/EfCore.Interceptors/Commands/*.cs", "!src/EfCore.Interceptors/Abstractions/*"],
+    "thresholds": { "high": 80, "low": 60, "break": 50 },
+    "testProjects": ["tests/EfCore.Interceptors.Tests/EfCore.Interceptors.Tests.csproj"]
+  }
+}

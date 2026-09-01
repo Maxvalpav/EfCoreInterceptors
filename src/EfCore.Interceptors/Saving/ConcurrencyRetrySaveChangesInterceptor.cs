@@ -33,7 +33,8 @@ public class ConcurrencyRetrySaveChangesInterceptor(
     TimeSpan? initialDelay = null,
     Action<int, TimeSpan>? onRetry = null) : SaveChangesInterceptor
 {
-    private readonly ConditionalWeakTable<DbContext, RetryState> _state = new();
+    private static readonly ConditionalWeakTable<DbContext, RetryState> _state = new();
+    public static void Clear(DbContext context) => _state.Remove(context);
     private sealed class RetryState
     {
         public int Attempts;

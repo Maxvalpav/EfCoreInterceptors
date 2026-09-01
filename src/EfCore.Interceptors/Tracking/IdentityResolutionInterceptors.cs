@@ -4,6 +4,15 @@ using Microsoft.EntityFrameworkCore.Diagnostics;
 
 namespace EfCore.Interceptors.Tracking;
 
+/// <summary>How identity conflicts are resolved.</summary>
+public enum IdentityResolutionMode
+{
+    /// <summary>Incoming values overwrite tracked state (last-write-wins).</summary>
+    Overwrite,
+    /// <summary>Tracked state wins; incoming values are ignored.</summary>
+    IgnoreIncoming
+}
+
 /// <summary>
 /// Resolves identity conflicts by copying incoming values over the already-tracked instance
 /// (last-write-wins). Requires enabling resolution on the change tracker:

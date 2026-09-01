@@ -28,21 +28,21 @@ public class VersionIncrementSaveChangesInterceptor : SaveChangesInterceptor, IO
         return base.SavingChangesAsync(eventData, result, cancellationToken);
     }
 
+    public override int SavedChanges(SaveChangesCompletedEventData e, int result){ if(e.Context!=null) ChangeTrackerSnapshot.End(e.Context); return base.SavedChanges(e,result); }
+    public override ValueTask<int> SavedChangesAsync(SaveChangesCompletedEventData e, int result, CancellationToken ct=default){ if(e.Context!=null) ChangeTrackerSnapshot.End(e.Context); return base.SavedChangesAsync(e,result,ct); }
+    public override void SaveChangesFailed(DbContextErrorEventData e){ if(e.Context!=null) ChangeTrackerSnapshot.End(e.Context); base.SaveChangesFailed(e); }
+    public override Task SaveChangesFailedAsync(DbContextErrorEventData e, CancellationToken ct=default){ if(e.Context!=null) ChangeTrackerSnapshot.End(e.Context); return base.SaveChangesFailedAsync(e,ct); }
+
     protected virtual void Increment(DbContext? context)
     {
-        if (context is null)
-        {
-            return;
-        }
-
-        foreach (var entry in context.ChangeTracker.Entries<IVersionedEntity>())
+        if (context is null) return;
+        foreach (var entry in ChangeTrackerSnapshot.Get<IVersionedEntity>(context))
         {
             if (entry.State == EntityState.Modified)
             {
-                // Avoid double-increment on concurrency retry (ClientWins keeps Version modified)
                 var prop = entry.Property(nameof(IVersionedEntity.Version));
                 if (prop.IsModified) continue;
-                entry.Entity.Version++;
+                ((IVersionedEntity)entry.Entity).Version++;
             }
         }
     }

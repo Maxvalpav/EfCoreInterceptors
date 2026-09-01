@@ -22,7 +22,9 @@ public class NPlusOneDetectorCommandInterceptor(
         loggerFactory?.CreateLogger("EfCore.Interceptors.NPlusOne") ?? NullLogger.Instance;
 
     // Weak table: entries die with their context, no leak across context lifetimes.
-    private readonly ConditionalWeakTable<DbContext, ConcurrentDictionary<string, int>> _executions = new();
+    // Key is XxHash3 of SQL template to reduce allocations (performance-audit #7)
+    private static readonly ConditionalWeakTable<DbContext, ConcurrentDictionary<ulong, int>> _executions = new();
+    public static void Clear(DbContext context) => _executions.Remove(context);
 
     public override InterceptionResult<DbDataReader> ReaderExecuting(
         DbCommand command, CommandEventData eventData, InterceptionResult<DbDataReader> result)
@@ -41,14 +43,10 @@ public class NPlusOneDetectorCommandInterceptor(
 
     protected virtual void Track(CommandEventData eventData, string sql)
     {
-        if (eventData.Context is null)
-        {
-            return;
-        }
-
+        if (eventData.Context is null) return;
+        var key = System.IO.Hashing.XxHash3.HashToUInt64(System.Text.Encoding.UTF8.GetBytes(sql));
         var counters = _executions.GetOrCreateValue(eventData.Context);
-        var hits = counters.AddOrUpdate(sql, 1, (_, existing) => existing + 1);
-
+        var hits = counters.AddOrUpdate(key, 1, (_, existing) => existing + 1);
         if (hits == _threshold)
         {
             _logger.LogWarning(

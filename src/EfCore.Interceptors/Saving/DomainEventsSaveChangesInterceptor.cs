@@ -1,3 +1,4 @@
+using System.Data.Common;
 using System.Runtime.CompilerServices;
 using EfCore.Interceptors.Abstractions;
 using Microsoft.EntityFrameworkCore;
@@ -12,10 +13,11 @@ namespace EfCore.Interceptors.Saving;
 /// and clears them from the aggregates. If the save fails the events stay on their aggregates
 /// and will be picked up by the next attempt.
 /// </summary>
-public class DomainEventsSaveChangesInterceptor(IDomainEventDispatcher? dispatcher = null) : SaveChangesInterceptor, IOrderedInterceptor
+public class DomainEventsSaveChangesInterceptor(IDomainEventDispatcher? dispatcher = null) : SaveChangesInterceptor, IOrderedInterceptor, IDbTransactionInterceptor
 {
     public int Order => 300;
-    private readonly ConditionalWeakTable<DbContext, PendingHolder> _pending = new();
+    private static readonly ConditionalWeakTable<DbContext, PendingHolder> _pending = new();
+    public static void Clear(DbContext context) => _pending.Remove(context);
     private sealed class PendingHolder(List<(IHasDomainEvents Aggregate, IReadOnlyList<IDomainEvent> Events)> snapshot)
     {
         public List<(IHasDomainEvents Aggregate, IReadOnlyList<IDomainEvent> Events)> Snapshot { get; } = snapshot;
@@ -41,6 +43,8 @@ public class DomainEventsSaveChangesInterceptor(IDomainEventDispatcher? dispatch
 
     public override int SavedChanges(SaveChangesCompletedEventData eventData, int result)
     {
+        // Defer dispatch if external transaction is still open (logic-audit #5)
+        if (eventData.Context?.Database.CurrentTransaction != null) return base.SavedChanges(eventData, result);
         Publish(eventData.Context);
         return base.SavedChanges(eventData, result);
     }
@@ -50,8 +54,32 @@ public class DomainEventsSaveChangesInterceptor(IDomainEventDispatcher? dispatch
         int result,
         CancellationToken cancellationToken = default)
     {
+        if (eventData.Context?.Database.CurrentTransaction != null) return await base.SavedChangesAsync(eventData, result, cancellationToken);
         await PublishAsync(eventData.Context, cancellationToken);
         return await base.SavedChangesAsync(eventData, result, cancellationToken);
+    }
+
+    // IDbTransactionInterceptor — dispatch only on commit (at-least-once inside process)
+    public void TransactionCommitted(DbTransaction transaction, TransactionEndEventData eventData) => Publish(eventData.Context);
+    public ValueTask TransactionCommittedAsync(DbTransaction transaction, TransactionEndEventData eventData, CancellationToken cancellationToken = default)
+    {
+        // Synchronous publish is fine — dispatcher is sync; async path handled via SavedChangesAsync when no tx
+        Publish(eventData.Context);
+        return ValueTask.CompletedTask;
+    }
+    public void TransactionRolledBack(DbTransaction transaction, TransactionEndEventData eventData)
+    {
+        if (eventData.Context is { } ctx && _pending.TryGetValue(ctx, out var holder))
+        {
+            _pending.Remove(ctx);
+            // Restore events to aggregates — transaction rolled back, next SaveChanges will retry
+            foreach (var (agg, evts) in holder.Snapshot) foreach (var e in evts) agg.AddDomainEvent(e);
+        }
+    }
+    public ValueTask TransactionRolledBackAsync(DbTransaction transaction, TransactionEndEventData eventData, CancellationToken cancellationToken = default)
+    {
+        TransactionRolledBack(transaction, eventData);
+        return ValueTask.CompletedTask;
     }
 
     public override void SaveChangesFailed(DbContextErrorEventData eventData)

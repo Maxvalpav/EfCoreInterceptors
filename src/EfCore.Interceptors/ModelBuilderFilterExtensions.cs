@@ -74,32 +74,60 @@ public static class ModelBuilderFilterExtensions
         return modelBuilder;
     }
 
+    /// <summary>
+    /// Preferred overload without capturing an external provider: use a <c>CurrentTenantId</c> property on your DbContext
+    /// (or implement <see cref="Model.ITenantProviderAccessor"/>). Call as:
+    /// <c>modelBuilder.Entity&lt;Order&gt;().HasQueryFilter("EfCoreInterceptors.Tenant", e =&gt; e.TenantId == CurrentTenantId)</c>
+    /// inside <c>OnModelCreating</c> where <c>CurrentTenantId</c> is a property of <c>this</c> DbContext.
+    /// This avoids freezing the tenant in EF's <see cref="Microsoft.EntityFrameworkCore.Infrastructure.IModelCacheKeyFactory"/> cache.
+    /// If you must use <see cref="ApplyTenantFilters(ModelBuilder, ITenantProvider)"/>, register
+    /// <see cref="Model.TenantModelCacheKeyFactory"/> via <c>options.ReplaceService&lt;IModelCacheKeyFactory, TenantModelCacheKeyFactory&gt;()</c>.
+    /// </summary>
+    public static ModelBuilder ApplyTenantFiltersWithContextProperty(this ModelBuilder modelBuilder, string tenantPropertyName = "CurrentTenantId")
+    {
+        // This helper is a documentation entry point; actual filter must be defined per-entity via HasQueryFilter
+        // referencing the DbContext property (EF translates this as a parameter, not a constant).
+        // We keep this method to surface the guidance in IntelliSense — callers should write their own HasQueryFilter.
+        throw new NotSupportedException(
+            $"Define tenant filter directly in OnModelCreating: modelBuilder.Entity<T>().HasQueryFilter(e => e.TenantId == {tenantPropertyName}). " +
+            "See docs/security-audit.md#1 and TenantModelCacheKeyFactory.");
+    }
+
     private static void MergeFilter(
         IMutableEntityType entityType,
         string featureKey,
         ParameterExpression parameter,
         Expression newBody)
     {
+#if NET10_0_OR_GREATER
         var declared = entityType.GetDeclaredQueryFilters().ToList();
-
         switch (declared.Count)
         {
             case 0:
                 entityType.SetQueryFilter(Expression.Lambda(newBody, parameter));
                 return;
-
             case 1 when declared[0].IsAnonymous:
-                // Fold into the single anonymous filter.
                 var existing = declared[0].Expression!;
                 var combined = Expression.AndAlso(Rebind(existing, parameter), newBody);
                 entityType.SetQueryFilter(Expression.Lambda(combined, parameter));
                 return;
-
             default:
-                // Named filters present — add ours independently so none get lost.
                 entityType.SetQueryFilter(featureKey, Expression.Lambda(newBody, parameter));
                 return;
         }
+#else
+        // net8.0: no named filters — fold into single anonymous filter
+        var existingFilter = entityType.GetQueryFilter();
+        if (existingFilter is null)
+        {
+            entityType.SetQueryFilter(Expression.Lambda(newBody, parameter));
+        }
+        else
+        {
+            var combined = Expression.AndAlso(Rebind(existingFilter, parameter), newBody);
+            entityType.SetQueryFilter(Expression.Lambda(combined, parameter));
+        }
+#endif
     }
 
     private static Expression Rebind(LambdaExpression filter, ParameterExpression target)
