@@ -61,18 +61,15 @@ public class DomainEventsSaveChangesInterceptor(IDomainEventDispatcher? dispatch
 
     // IDbTransactionInterceptor — dispatch only on commit (at-least-once inside process)
     public void TransactionCommitted(DbTransaction transaction, TransactionEndEventData eventData) => Publish(eventData.Context);
-    public ValueTask TransactionCommittedAsync(DbTransaction transaction, TransactionEndEventData eventData, CancellationToken cancellationToken = default)
+    public async ValueTask TransactionCommittedAsync(DbTransaction transaction, TransactionEndEventData eventData, CancellationToken cancellationToken = default)
     {
-        // Synchronous publish is fine — dispatcher is sync; async path handled via SavedChangesAsync when no tx
-        Publish(eventData.Context);
-        return ValueTask.CompletedTask;
+        await PublishAsync(eventData.Context, cancellationToken).ConfigureAwait(false);
     }
     public void TransactionRolledBack(DbTransaction transaction, TransactionEndEventData eventData)
     {
         if (eventData.Context is { } ctx && _pending.TryGetValue(ctx, out var holder))
         {
             _pending.Remove(ctx);
-            // Restore events to aggregates — transaction rolled back, next SaveChanges will retry
             foreach (var (agg, evts) in holder.Snapshot) foreach (var e in evts) agg.AddDomainEvent(e);
         }
     }
@@ -84,10 +81,10 @@ public class DomainEventsSaveChangesInterceptor(IDomainEventDispatcher? dispatch
 
     public override void SaveChangesFailed(DbContextErrorEventData eventData)
     {
-        // Keep aggregate events intact for retry — only drop the pending snapshot.
-        if (eventData.Context is not null)
+        if (eventData.Context is { } ctx && _pending.TryGetValue(ctx, out var holder))
         {
-            _pending.Remove(eventData.Context);
+            _pending.Remove(ctx);
+            foreach (var (agg, evts) in holder.Snapshot) foreach (var e in evts) agg.AddDomainEvent(e);
         }
 
         base.SaveChangesFailed(eventData);
@@ -96,9 +93,10 @@ public class DomainEventsSaveChangesInterceptor(IDomainEventDispatcher? dispatch
     public override Task SaveChangesFailedAsync(
         DbContextErrorEventData eventData, CancellationToken cancellationToken = default)
     {
-        if (eventData.Context is not null)
+        if (eventData.Context is { } ctx && _pending.TryGetValue(ctx, out var holder))
         {
-            _pending.Remove(eventData.Context);
+            _pending.Remove(ctx);
+            foreach (var (agg, evts) in holder.Snapshot) foreach (var e in evts) agg.AddDomainEvent(e);
         }
 
         return base.SaveChangesFailedAsync(eventData, cancellationToken);
@@ -128,6 +126,8 @@ public class DomainEventsSaveChangesInterceptor(IDomainEventDispatcher? dispatch
         {
             _pending.Remove(context);
             _pending.Add(context, new PendingHolder(snapshot));
+            // Clear aggregates now — matches Outbox semantics, prevents duplicates on rollback
+            foreach (var (agg, _) in snapshot) agg.ClearDomainEvents();
         }
     }
 
@@ -163,9 +163,9 @@ public class DomainEventsSaveChangesInterceptor(IDomainEventDispatcher? dispatch
         }
         catch (Exception ex)
         {
-            // Keep pending + aggregate events for retry; do not clear.
-            throw new InvalidOperationException("Domain event dispatch failed after a successful SaveChanges.", ex);
+            throw new DomainEventDispatchException("Domain event dispatch failed after a successful SaveChanges.", ex);
         }
+        // Clear already done in Snapshot — no second clear needed
     }
 
     private async Task PublishAsync(DbContext? context, CancellationToken cancellationToken)
@@ -181,11 +181,6 @@ public class DomainEventsSaveChangesInterceptor(IDomainEventDispatcher? dispatch
         if (_dispatcher is null || events.Length == 0)
         {
             _pending.Remove(context);
-            foreach (var (aggregate, _) in snapshot)
-            {
-                aggregate.ClearDomainEvents();
-            }
-
             return;
         }
 
@@ -193,14 +188,16 @@ public class DomainEventsSaveChangesInterceptor(IDomainEventDispatcher? dispatch
         {
             await _dispatcher.DispatchAsync(events, cancellationToken);
             _pending.Remove(context);
-            foreach (var (aggregate, _) in snapshot)
-            {
-                aggregate.ClearDomainEvents();
-            }
         }
         catch (Exception ex)
         {
-            throw new InvalidOperationException("Domain event dispatch failed after a successful SaveChanges.", ex);
+            throw new DomainEventDispatchException("Domain event dispatch failed after a successful SaveChanges.", ex);
         }
     }
+}
+
+/// <summary>Dispatch failed after DB commit — changes were saved. Inspect InnerException.</summary>
+public sealed class DomainEventDispatchException(string message, Exception inner) : InvalidOperationException(message, inner)
+{
+    public bool ChangesWereSaved => true;
 }

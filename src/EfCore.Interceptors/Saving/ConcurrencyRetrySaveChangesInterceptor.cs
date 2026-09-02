@@ -35,6 +35,7 @@ public class ConcurrencyRetrySaveChangesInterceptor(
 {
     private static readonly ConditionalWeakTable<DbContext, RetryState> _state = new();
     public static void Clear(DbContext context) => _state.Remove(context);
+    public static bool IsRetrying(DbContext context) => context is not null && _state.TryGetValue(context, out var s) && s.Retrying;
     private sealed class RetryState
     {
         public int Attempts;
@@ -150,6 +151,8 @@ public class ConcurrencyRetrySaveChangesInterceptor(
             {
                 if (_state.TryGetValue(context, out var st)) st.Retrying = false;
             }
+
+            // Note: callers with nested SaveChanges (Version, ChangeLog, Encryption) should check ConcurrencyRetrySaveChangesInterceptor.IsRetrying(context) to avoid double effects
         }
 
         _state.Remove(context);
@@ -195,7 +198,7 @@ public class ConcurrencyRetrySaveChangesInterceptor(
                 }
             }
 
-            Reconcile(failure);
+            await ReconcileAsync(failure, cancellationToken).ConfigureAwait(false);
 
             GetState(context).Retrying = true;
             try
@@ -239,11 +242,32 @@ public class ConcurrencyRetrySaveChangesInterceptor(
 
                 case ConcurrencyRetryPolicy.StoreWins:
                     {
-                        var dbValues = entry.GetDatabaseValues();
-                        if (dbValues is null)
-                            throw new InvalidOperationException(
-                                $"Row for '{entry.Metadata.ClrType.Name}' was deleted by another party.");
-                        entry.Reload();
+                        // Single round-trip: Reload throws if row was deleted
+                        try { entry.Reload(); }
+                        catch (InvalidOperationException ex) when (ex.Message.Contains("deleted", StringComparison.OrdinalIgnoreCase))
+                        { throw new InvalidOperationException($"Row for '{entry.Metadata.ClrType.Name}' was deleted by another party.", ex); }
+                        break;
+                    }
+            }
+        }
+    }
+
+    private async Task ReconcileAsync(DbUpdateConcurrencyException failure, CancellationToken ct)
+    {
+        foreach (var entry in failure.Entries)
+        {
+            switch (_policy)
+            {
+                case ConcurrencyRetryPolicy.ClientWins:
+                    {
+                        var dbValues = await entry.GetDatabaseValuesAsync(ct).ConfigureAwait(false)
+                            ?? throw new InvalidOperationException($"Row for '{entry.Metadata.ClrType.Name}' was deleted by another party.");
+                        entry.OriginalValues.SetValues(dbValues);
+                        break;
+                    }
+                case ConcurrencyRetryPolicy.StoreWins:
+                    {
+                        await entry.ReloadAsync(ct).ConfigureAwait(false);
                         break;
                     }
             }
@@ -253,9 +277,11 @@ public class ConcurrencyRetrySaveChangesInterceptor(
     private TimeSpan BackoffDelay(int retryNumber)
     {
         var ms = _initialDelay.TotalMilliseconds * Math.Pow(2, retryNumber - 1);
-        // Cap at 5s and add jitter would require Random; keep deterministic but bounded
         ms = Math.Min(ms, 5000);
         if (double.IsInfinity(ms) || ms > TimeSpan.MaxValue.TotalMilliseconds) ms = 5000;
+        // jitter 80-120% to avoid thundering herd
+        var jitter = 0.8 + Random.Shared.NextDouble() * 0.4;
+        ms *= jitter;
         return TimeSpan.FromMilliseconds(ms);
     }
 }

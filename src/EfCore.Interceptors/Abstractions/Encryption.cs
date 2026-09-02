@@ -20,6 +20,13 @@ public interface IPropertyValueEncryptor
 
     /// <summary>Returns plaintext for materialization, or null when input is null.</summary>
     string? Decrypt(string? ciphertext);
+
+    /// <summary>Optional AAD-aware overload — default ignores AAD for backward compatibility.</summary>
+    string? Encrypt(string? plaintext, byte[]? associatedData) => Encrypt(plaintext);
+    string? Decrypt(string? ciphertext, byte[]? associatedData) => Decrypt(ciphertext);
+
+    /// <summary>Returns true if the value looks like ciphertext produced by this encryptor.</summary>
+    bool IsEncrypted(string? value) => false;
 }
 
 /// <summary>
@@ -64,14 +71,15 @@ public sealed class AesGcmPropertyValueEncryptor : IPropertyValueEncryptor, IDis
          return EncryptInternal(plaintext, _aadContext is null ? null : Encoding.UTF8.GetBytes(_aadContext));
      }
 
-     private string? EncryptInternal(string? plaintext, byte[]? aad)
-     {
-         if (plaintext is null)
-         {
-             return null;
-         }
+      private string? EncryptInternal(string? plaintext, byte[]? aad)
+      {
+          if (_disposed) throw new ObjectDisposedException(nameof(AesGcmPropertyValueEncryptor));
+          if (plaintext is null)
+          {
+              return null;
+          }
 
-         var nonce = RandomNumberGenerator.GetBytes(12);
+          var nonce = RandomNumberGenerator.GetBytes(12);
          var tag = new byte[16];
          var plainBytes = Encoding.UTF8.GetBytes(plaintext);
          var cipher = new byte[plainBytes.Length];
@@ -104,12 +112,13 @@ public sealed class AesGcmPropertyValueEncryptor : IPropertyValueEncryptor, IDis
          return DecryptInternal(ciphertext, _aadContext is null ? null : Encoding.UTF8.GetBytes(_aadContext));
      }
 
-     private string? DecryptInternal(string? ciphertext, byte[]? aad)
-     {
-         if (ciphertext is null)
-         {
-             return null;
-         }
+      private string? DecryptInternal(string? ciphertext, byte[]? aad)
+      {
+          if (_disposed) throw new ObjectDisposedException(nameof(AesGcmPropertyValueEncryptor));
+          if (ciphertext is null)
+          {
+              return null;
+          }
 
          var payload = Convert.FromBase64String(ciphertext);
 
@@ -164,6 +173,17 @@ public sealed class AesGcmPropertyValueEncryptor : IPropertyValueEncryptor, IDis
          }
      }
 
-     /// <summary>Build deterministic AAD from table/column/pk — prevents cross-column ciphertext swap.</summary>
-     public static byte[] BuildAad(string table, string column, string pk) => Encoding.UTF8.GetBytes($"{table}|{column}|{pk}");
+      public bool IsEncrypted(string? value)
+      {
+          if (string.IsNullOrEmpty(value)) return false;
+          try
+          {
+              var payload = Convert.FromBase64String(value);
+              return payload.Length >= 1 + 12 + 16 && payload[0] == CurrentVersion;
+          }
+          catch { return false; }
+      }
+
+      /// <summary>Build deterministic AAD from table/column/pk — prevents cross-column ciphertext swap.</summary>
+      public static byte[] BuildAad(string table, string column, string pk) => Encoding.UTF8.GetBytes($"{table}|{column}|{pk}");
  }

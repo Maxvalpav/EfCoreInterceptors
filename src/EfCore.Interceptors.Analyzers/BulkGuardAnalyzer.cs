@@ -7,8 +7,8 @@ using System.Collections.Immutable;
 namespace EfCore.Interceptors.Analyzers;
 
 /// <summary>
-/// EFI1001-EFI1005: warns when ExecuteUpdate/ExecuteDelete bypasses SaveChanges interceptors (bulk-operations-gap).
-/// Full docs in docs/bulk-operations-gap.md. Analyzer is intentionally conservative — best-effort via syntax.
+/// EFI1001-EFI1005: warns when ExecuteUpdate/ExecuteDelete bypasses SaveChanges interceptors.
+/// Analyzer is intentionally conservative — best-effort via syntax.
 /// </summary>
 [DiagnosticAnalyzer(LanguageNames.CSharp)]
 public sealed class BulkGuardAnalyzer : DiagnosticAnalyzer

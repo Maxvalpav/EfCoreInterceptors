@@ -44,19 +44,44 @@ public class ValidationSaveChangesInterceptor : SaveChangesInterceptor, IOrdered
         {
             if (entry.State is not (EntityState.Added or EntityState.Modified)) continue;
 
-            var validationContext = new ValidationContext(entry.Entity);
+            ValidateEntry(entry, failures);
+            // D-27: also validate owned/complex instances
+            foreach (var complex in entry.ComplexProperties)
+                ValidateComplex(complex, failures);
+            foreach (var nav in entry.References.Where(r => r.TargetEntry?.Metadata.IsOwned() == true))
+                if (nav.TargetEntry != null) ValidateEntry(nav.TargetEntry, failures);
+        }
+
+        void ValidateEntry(EntityEntry e, Dictionary<string,string[]> dict)
+        {
+            var validationContext = new ValidationContext(e.Entity);
             var results = new List<ValidationResult>();
-            if (!Validator.TryValidateObject(entry.Entity, validationContext, results, validateAllProperties: true))
+            if (!Validator.TryValidateObject(e.Entity, validationContext, results, validateAllProperties: true))
             {
-                var key = $"{entry.Metadata.ClrType.Name}[{DescribeKey(entry)}]";
+                var key = $"{e.Metadata.ClrType.Name}[{DescribeKey(e)}]";
                 var messages = results.Select(r => r.ErrorMessage ?? "Invalid.").ToArray();
-                if (failures.TryGetValue(key, out var existing))
-                {
-                    failures[key] = [.. existing, .. messages];
-                }
+                if (dict.TryGetValue(key, out var existing))
+                    dict[key] = [.. existing, .. messages];
                 else
+                    dict[key] = messages;
+            }
+        }
+
+        void ValidateComplex(ComplexPropertyEntry c, Dictionary<string,string[]> dict)
+        {
+            if (c.ComplexProperties.Any())
+                foreach (var n in c.ComplexProperties) ValidateComplex(n, dict);
+            var pi = c.Metadata.PropertyInfo;
+            if (pi?.GetValue(c.EntityEntry.Entity) is object complexObj)
+            {
+                var ctx = new ValidationContext(complexObj);
+                var res = new List<ValidationResult>();
+                if (!Validator.TryValidateObject(complexObj, ctx, res, true))
                 {
-                    failures[key] = messages;
+                    var key = $"{c.Metadata.DeclaringType.ClrType.Name}.{c.Metadata.Name}";
+                    var msgs = res.Select(r => r.ErrorMessage ?? "Invalid.").ToArray();
+                    if (dict.TryGetValue(key, out var ex)) dict[key] = [.. ex, .. msgs];
+                    else dict[key] = msgs;
                 }
             }
         }

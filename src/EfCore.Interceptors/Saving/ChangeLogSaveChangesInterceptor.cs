@@ -31,6 +31,7 @@ public class ChangeLogSaveChangesInterceptor(
     private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<DbContext, PatchGuard> _isPatching = new();
     private sealed class PatchGuard { public bool Value; }
     public static void Clear(DbContext context) { _pendingKeys.Remove(context); _isPatching.Remove(context); }
+    public static bool IsPatching(DbContext context) => context is not null && _isPatching.TryGetValue(context, out var g) && g.Value;
 
     public override InterceptionResult<int> SavingChanges(
         DbContextEventData eventData, InterceptionResult<int> result)

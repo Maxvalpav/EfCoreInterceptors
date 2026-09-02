@@ -119,16 +119,17 @@ public class OutboxSaveChangesInterceptor(TimeProvider? timeProvider = null) : S
 
     public override void SaveChangesFailed(DbContextErrorEventData eventData)
     {
-        if (eventData.Context is { } context && _pending.TryGetValue(context, out var holder))
+        if (eventData.Context is { } context)
         {
-            _pending.Remove(context);
-            // The outbox rows rolled back with the transaction: put the events back on their aggregates.
-            foreach (var (aggregate, events) in holder.Snapshot)
+            // Detach OutboxMessage Added entries to avoid duplicates on retry
+            foreach (var e in context.ChangeTracker.Entries<OutboxMessage>().Where(e => e.State == EntityState.Added).ToList())
+                e.State = EntityState.Detached;
+            if (_pending.TryGetValue(context, out var holder))
             {
-                foreach (var domainEvent in events)
-                {
-                    aggregate.AddDomainEvent(domainEvent);
-                }
+                _pending.Remove(context);
+                foreach (var (aggregate, events) in holder.Snapshot)
+                    foreach (var domainEvent in events)
+                        aggregate.AddDomainEvent(domainEvent);
             }
         }
 
@@ -138,15 +139,16 @@ public class OutboxSaveChangesInterceptor(TimeProvider? timeProvider = null) : S
     public override Task SaveChangesFailedAsync(
         DbContextErrorEventData eventData, CancellationToken cancellationToken = default)
     {
-        if (eventData.Context is { } context && _pending.TryGetValue(context, out var holder))
+        if (eventData.Context is { } context)
         {
-            _pending.Remove(context);
-            foreach (var (aggregate, events) in holder.Snapshot)
+            foreach (var e in context.ChangeTracker.Entries<OutboxMessage>().Where(e => e.State == EntityState.Added).ToList())
+                e.State = EntityState.Detached;
+            if (_pending.TryGetValue(context, out var holder))
             {
-                foreach (var domainEvent in events)
-                {
-                    aggregate.AddDomainEvent(domainEvent);
-                }
+                _pending.Remove(context);
+                foreach (var (aggregate, events) in holder.Snapshot)
+                    foreach (var domainEvent in events)
+                        aggregate.AddDomainEvent(domainEvent);
             }
         }
 

@@ -32,4 +32,9 @@ internal static class ChangeTrackerSnapshot
         _cache.Remove(context);
         if (_active.Value != null) _active.Value.Remove(context);
     }
+
+    /// <summary>Ensures End is called even when SavingChanges throws — use via try/finally in interceptors.</summary>
+    public static void BeginScope(DbContext context) => GetAll(context);
+
+    public static bool IsActive(DbContext context) => _cache.TryGetValue(context, out _);
 }

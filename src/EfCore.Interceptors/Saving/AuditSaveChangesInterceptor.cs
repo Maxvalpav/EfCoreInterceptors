@@ -23,7 +23,8 @@ public class AuditSaveChangesInterceptor(
     public override InterceptionResult<int> SavingChanges(
         DbContextEventData eventData, InterceptionResult<int> result)
     {
-        ApplyAuditStamps(eventData.Context);
+        try { ApplyAuditStamps(eventData.Context); }
+        catch { if (eventData.Context != null) ChangeTrackerSnapshot.End(eventData.Context); throw; }
         return base.SavingChanges(eventData, result);
     }
 
@@ -32,7 +33,8 @@ public class AuditSaveChangesInterceptor(
         InterceptionResult<int> result,
         CancellationToken cancellationToken = default)
     {
-        ApplyAuditStamps(eventData.Context);
+        try { ApplyAuditStamps(eventData.Context); }
+        catch { if (eventData.Context != null) ChangeTrackerSnapshot.End(eventData.Context); throw; }
         return base.SavingChangesAsync(eventData, result, cancellationToken);
     }
 

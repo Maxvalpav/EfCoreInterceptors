@@ -22,7 +22,6 @@ public enum BulkOperationPolicy
 /// <see cref="Microsoft.EntityFrameworkCore.Diagnostics.ISaveChangesInterceptor"/>s (soft-delete, encryption, audit, guards).
 /// Inspects <see cref="CommandSource.BulkUpdate"/> / <see cref="CommandSource.ExecuteDelete"/> / <see cref="CommandSource.ExecuteUpdate"/>
 /// and blocks/warns when the SQL touches a guarded table (ISoftDeletableEntity, IProtectedEntity, IImmutableEntity, [Encrypted], ITenantEntity).
-/// See docs/bulk-operations-gap.md.
 /// </summary>
 public class BulkOperationGuardInterceptor : DbCommandInterceptor
 {

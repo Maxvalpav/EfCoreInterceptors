@@ -21,6 +21,7 @@ public sealed class MemoryQueryCacheStore(TimeSpan? defaultTtl = null, int sizeL
     private readonly System.Collections.Concurrent.ConcurrentDictionary<string, (CachedQueryResult Result, DateTimeOffset Expires)> _map = new();
     private readonly TimeSpan _defaultTtl = defaultTtl ?? TimeSpan.FromSeconds(30);
     private readonly int _sizeLimit = Math.Max(1, sizeLimit);
+    private readonly object _evictLock = new();
 
     public int Count => _map.Count;
     public bool TryGet(string key, out CachedQueryResult? value)
@@ -35,8 +36,19 @@ public sealed class MemoryQueryCacheStore(TimeSpan? defaultTtl = null, int sizeL
     {
         if (_map.Count >= _sizeLimit)
         {
-            foreach (var kv in _map) if (kv.Value.Expires <= DateTimeOffset.UtcNow) _map.TryRemove(kv.Key, out _);
-            if (_map.Count >= _sizeLimit) { var first = _map.Keys.FirstOrDefault(); if (first != null) _map.TryRemove(first, out _); }
+            lock (_evictLock)
+            {
+                if (_map.Count >= _sizeLimit)
+                {
+                    foreach (var kv in _map) if (kv.Value.Expires <= DateTimeOffset.UtcNow) _map.TryRemove(kv.Key, out _);
+                    if (_map.Count >= _sizeLimit)
+                    {
+                        // LRU-ish: evict earliest expiry (best-effort without full LRU)
+                        var victim = _map.OrderBy(kv => kv.Value.Expires).FirstOrDefault().Key;
+                        if (victim != null) _map.TryRemove(victim, out _);
+                    }
+                }
+            }
         }
         _map[key] = (value, DateTimeOffset.UtcNow.Add(ttl == default ? _defaultTtl : ttl));
     }
@@ -82,6 +94,11 @@ public sealed class DistributedQueryCacheStore : IQueryCacheStore
     }
     public void Clear() { foreach (var k in _keys.Keys.ToList()) _cache.Remove(k); _keys.Clear(); }
 
+    // Note: System.Text.Json cannot round-trip List<object[]> with mixed types (JsonElement). Serialize preserves field types for Memory, but Distributed requires binary/MessagePack for prod. Keep best-effort JSON with type coercion.
     private static byte[] Serialize(CachedQueryResult r) => System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(r, new System.Text.Json.JsonSerializerOptions { IncludeFields = true });
-    private static CachedQueryResult? Deserialize(byte[] b) => System.Text.Json.JsonSerializer.Deserialize<CachedQueryResult>(b, new System.Text.Json.JsonSerializerOptions { IncludeFields = true });
+    private static CachedQueryResult? Deserialize(byte[] b)
+    {
+        try { return System.Text.Json.JsonSerializer.Deserialize<CachedQueryResult>(b, new System.Text.Json.JsonSerializerOptions { IncludeFields = true }); }
+        catch { return null; }
+    }
 }

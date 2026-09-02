@@ -17,31 +17,57 @@ namespace EfCore.Interceptors;
 /// Obtain it through <see cref="DbContextOptionsBuilderExtensions.UseEfInterceptors"/>
 /// or <see cref="ServiceCollectionExtensions.AddEfInterceptors"/>.
 /// </summary>
+public static class InterceptorOrder
+{
+    public const int Validation = -300;
+    public const int Guards = -200;
+    public const int MultiTenancy = -150;
+    public const int SoftDelete = -100;
+    public const int Audit = 0;
+    public const int Version = 50;
+    public const int ChangeLog = 100;
+    public const int Outbox = 200;
+    public const int DomainEvents = 300;
+    public const int Metrics = 1000;
+}
+
 public sealed class EfInterceptorsSetup
 {
     private readonly List<IInterceptor> _interceptors = [];
+    private ILoggerFactory? _loggerFactory;
 
     internal IReadOnlyList<IInterceptor> Interceptors => _interceptors;
+
+    public EfInterceptorsSetup WithLoggerFactory(ILoggerFactory loggerFactory)
+    {
+        _loggerFactory = loggerFactory;
+        return this;
+    }
+
+    private void AddOrReplace<T>(T interceptor) where T : IInterceptor
+    {
+        _interceptors.RemoveAll(i => i.GetType() == typeof(T));
+        _interceptors.Add(interceptor);
+    }
 
     internal void BuildInto(DbContextOptionsBuilder builder)
     {
         if (_interceptors.Count > 0)
         {
-            // provider-matrix: warn if non-relational provider gets command interceptors
             var hasCommandInterceptor = _interceptors.Any(i => i is DbCommandInterceptor);
             if (hasCommandInterceptor)
             {
                 var extensionNames = string.Join(",", builder.Options.Extensions.Select(e => e.GetType().Name));
                 if (extensionNames.Contains("Cosmos", StringComparison.OrdinalIgnoreCase) || extensionNames.Contains("InMemory", StringComparison.OrdinalIgnoreCase))
                 {
-                    // Best-effort warning — does not throw, as tests may use SQLite with InMemory tag
-                    System.Diagnostics.Debug.WriteLine($"[EfCore.Interceptors] Warning: command interceptors registered with non-relational provider ({extensionNames}) — they will never be invoked. See docs/provider-matrix.md");
+                    var logger = _loggerFactory?.CreateLogger("EfCore.Interceptors");
+                    var msg = $"[EfCore.Interceptors] Warning: command interceptors registered with non-relational provider ({extensionNames}) — they will never be invoked.";
+                    if (logger != null) logger.LogWarning("{Message}", msg);
+                    else System.Diagnostics.Trace.WriteLine(msg);
                 }
             }
-            // Deterministic save-pipeline order: Validation → Guards → MultiTenancy → SoftDelete → Audit → Version → ChangeLog → Outbox → DomainEvents → Metrics
             var ordered = _interceptors
                 .OrderBy(i => (i as IOrderedInterceptor)?.Order ?? 0)
-                .ThenBy(i => _interceptors.IndexOf(i))
                 .ToArray();
             builder.AddInterceptors(ordered);
         }
@@ -287,7 +313,10 @@ public sealed class EfInterceptorsSetup
     /// EF will construct those instances through the factories and bind column values on top.
     /// </summary>
     public EfInterceptorsSetup WithConstructorFactories(IReadOnlyDictionary<Type, Func<object>> factoriesByType)
-        => Add(new Materialization.FactoryMethodInstantiationBindingInterceptor(factoriesByType));
+    {
+        AddOrReplace(new Materialization.FactoryMethodInstantiationBindingInterceptor(factoriesByType));
+        return this;
+    }
 
     // ---------- Wave 5: governance и тонкая настройка ----------
 
@@ -381,10 +410,17 @@ public sealed class EfInterceptorsSetup
     public EfInterceptorsSetup WithPostgresHints(IReadOnlyDictionary<string, string>? hintsByTag = null)
         => Add(new Commands.QueryHintsCommandInterceptor(hintsByTag: hintsByTag ?? Queries.PostgresQueryHints.Defaults));
 
-    /// <summary>Deterministic searchable encryption for equality lookups.</summary>
+    /// <summary>Deterministic searchable encryption for equality lookups. Requires deterministic encryptor (e.g. DeterministicAesGcmEncryptor) — random-nonce encryptors will produce non-searchable ciphertext.</summary>
     public EfInterceptorsSetup WithSearchableEncryption(Abstractions.IPropertyValueEncryptor encryptor)
-        => Add(new Saving.PropertyEncryptionSaveChangesInterceptor(encryptor))
-           .Add(new Materialization.PropertyDecryptionMaterializationInterceptor(encryptor));
+    {
+        if (encryptor is not Abstractions.DeterministicAesGcmEncryptor && encryptor.GetType().Name != "DeterministicAesGcmEncryptor")
+        {
+            var logger = _loggerFactory?.CreateLogger("EfCore.Interceptors");
+            logger?.LogWarning("WithSearchableEncryption called with non-deterministic encryptor {Type} — equality search will not work, use DeterministicAesGcmEncryptor", encryptor.GetType().Name);
+        }
+        return Add(new Saving.PropertyEncryptionSaveChangesInterceptor(encryptor))
+            .Add(new Materialization.PropertyDecryptionMaterializationInterceptor(encryptor));
+    }
 
     /// <summary>Resilience retries for transient command failures.</summary>
     public EfInterceptorsSetup WithResilience(int maxRetries = 2, TimeSpan? baseDelay = null, TimeSpan? maxDelay = null, ILoggerFactory? loggerFactory = null)

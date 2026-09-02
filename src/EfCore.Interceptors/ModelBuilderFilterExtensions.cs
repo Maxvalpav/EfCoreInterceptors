@@ -90,7 +90,7 @@ public static class ModelBuilderFilterExtensions
         // We keep this method to surface the guidance in IntelliSense — callers should write their own HasQueryFilter.
         throw new NotSupportedException(
             $"Define tenant filter directly in OnModelCreating: modelBuilder.Entity<T>().HasQueryFilter(e => e.TenantId == {tenantPropertyName}). " +
-            "See docs/security-audit.md#1 and TenantModelCacheKeyFactory.");
+            "See TenantModelCacheKeyFactory.");
     }
 
     private static void MergeFilter(

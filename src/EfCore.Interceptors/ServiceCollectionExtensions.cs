@@ -46,7 +46,9 @@ public static class ServiceCollectionExtensions
         this DbContextOptionsBuilder optionsBuilder,
         IServiceProvider serviceProvider)
     {
-        var interceptors = serviceProvider.GetServices<IInterceptor>().ToArray();
+        var interceptors = serviceProvider.GetServices<IInterceptor>()
+            .OrderBy(i => (i as Abstractions.IOrderedInterceptor)?.Order ?? 0)
+            .ToArray();
         if (interceptors.Length > 0)
         {
             optionsBuilder.AddInterceptors(interceptors);

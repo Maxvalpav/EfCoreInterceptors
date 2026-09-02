@@ -2,7 +2,9 @@ using System.Collections.Concurrent;
 using System.Data;
 using System.Data.Common;
 using EfCore.Interceptors.Abstractions;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
+using Microsoft.EntityFrameworkCore.Storage;
 
 namespace EfCore.Interceptors.Commands;
 
@@ -20,7 +22,8 @@ public class CachingCommandInterceptor : DbCommandInterceptor, Microsoft.EntityF
     private readonly TimeSpan _timeToLive;
     private readonly bool _skipInsideTransactions;
     private readonly bool _invalidateOnWrites;
-    private volatile bool _pendingInvalidation;
+    private readonly System.Runtime.CompilerServices.ConditionalWeakTable<System.Data.Common.DbTransaction, object> _pendingTx = new();
+    private sealed class PendingTag { }
 
     public CachingCommandInterceptor(
         TimeSpan? timeToLive = null,
@@ -95,14 +98,19 @@ public class CachingCommandInterceptor : DbCommandInterceptor, Microsoft.EntityF
     /// including raw SQL) clears the cache so subsequent reads see fresh data.
     /// Covers NonQuery, Scalar and Reader writes (INSERT RETURNING).
     /// </summary>
+    private void MarkPending(System.Data.Common.DbTransaction? tx)
+    {
+        if (tx is null) InvalidateAll();
+        else _pendingTx.AddOrUpdate(tx, new PendingTag());
+    }
+
     public override int NonQueryExecuted(DbCommand command, CommandExecutedEventData eventData, int result)
     {
         if (_invalidateOnWrites)
         {
-            if (eventData.Context?.Database.CurrentTransaction is not null)
-                _pendingInvalidation = true;
-            else
-                InvalidateAll();
+            var tx = eventData.Context?.Database.CurrentTransaction?.GetDbTransaction();
+            if (tx is not null) MarkPending(tx);
+            else InvalidateAll();
         }
 
         return base.NonQueryExecuted(command, eventData, result);
@@ -114,10 +122,9 @@ public class CachingCommandInterceptor : DbCommandInterceptor, Microsoft.EntityF
     {
         if (_invalidateOnWrites)
         {
-            if (eventData.Context?.Database.CurrentTransaction is not null)
-                _pendingInvalidation = true;
-            else
-                InvalidateAll();
+            var tx = eventData.Context?.Database.CurrentTransaction?.GetDbTransaction();
+            if (tx is not null) MarkPending(tx);
+            else InvalidateAll();
         }
 
         return await base.NonQueryExecutedAsync(command, eventData, result, cancellationToken);
@@ -127,10 +134,9 @@ public class CachingCommandInterceptor : DbCommandInterceptor, Microsoft.EntityF
     {
         if (_invalidateOnWrites && SqlWriteDetector.IsWrite(command.CommandText))
         {
-            if (eventData.Context?.Database.CurrentTransaction is not null)
-                _pendingInvalidation = true;
-            else
-                InvalidateAll();
+            var tx = eventData.Context?.Database.CurrentTransaction?.GetDbTransaction();
+            if (tx is not null) MarkPending(tx);
+            else InvalidateAll();
         }
 
         return base.ReaderExecuted(command, eventData, result);
@@ -140,10 +146,9 @@ public class CachingCommandInterceptor : DbCommandInterceptor, Microsoft.EntityF
     {
         if (_invalidateOnWrites && SqlWriteDetector.IsWrite(command.CommandText))
         {
-            if (eventData.Context?.Database.CurrentTransaction is not null)
-                _pendingInvalidation = true;
-            else
-                InvalidateAll();
+            var tx = eventData.Context?.Database.CurrentTransaction?.GetDbTransaction();
+            if (tx is not null) MarkPending(tx);
+            else InvalidateAll();
         }
 
         return base.ScalarExecuted(command, eventData, result);
@@ -152,27 +157,27 @@ public class CachingCommandInterceptor : DbCommandInterceptor, Microsoft.EntityF
     // Invalidate only after transaction commits to avoid dirty reads and premature eviction on rollback
     public void TransactionCommitted(System.Data.Common.DbTransaction transaction, TransactionEndEventData eventData)
     {
-        if (_pendingInvalidation)
+        if (_pendingTx.TryGetValue(transaction, out _))
         {
-            _pendingInvalidation = false;
+            _pendingTx.Remove(transaction);
             InvalidateAll();
         }
     }
 
     public ValueTask TransactionCommittedAsync(System.Data.Common.DbTransaction transaction, TransactionEndEventData eventData, CancellationToken cancellationToken = default)
     {
-        if (_pendingInvalidation)
+        if (_pendingTx.TryGetValue(transaction, out _))
         {
-            _pendingInvalidation = false;
+            _pendingTx.Remove(transaction);
             InvalidateAll();
         }
         return default;
     }
 
-    public void TransactionRolledBack(System.Data.Common.DbTransaction transaction, TransactionEndEventData eventData) => _pendingInvalidation = false;
+    public void TransactionRolledBack(System.Data.Common.DbTransaction transaction, TransactionEndEventData eventData) => _pendingTx.Remove(transaction);
     public ValueTask TransactionRolledBackAsync(System.Data.Common.DbTransaction transaction, TransactionEndEventData eventData, CancellationToken cancellationToken = default)
     {
-        _pendingInvalidation = false;
+        _pendingTx.Remove(transaction);
         return default;
     }
 
@@ -224,7 +229,15 @@ public class CachingCommandInterceptor : DbCommandInterceptor, Microsoft.EntityF
 
     internal static string BuildKey(DbCommand command)
     {
-        var sb = new System.Text.StringBuilder(command.CommandText);
+        var sb = new System.Text.StringBuilder();
+        // Tenant isolation: include connection string hash (without exposing password in logs)
+        var cs = command.Connection?.ConnectionString;
+        if (!string.IsNullOrEmpty(cs))
+        {
+            var csHash = System.IO.Hashing.XxHash3.HashToUInt64(System.Text.Encoding.UTF8.GetBytes(cs));
+            sb.Append($"[cs:{csHash:X16}]|");
+        }
+        sb.Append(command.CommandText);
         // Sort parameters to make key deterministic regardless of provider ordering
         foreach (var parameter in command.Parameters.OfType<DbParameter>().OrderBy(p => p.ParameterName, StringComparer.Ordinal))
         {

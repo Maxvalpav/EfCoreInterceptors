@@ -38,7 +38,15 @@ public class PropertyDecryptionMaterializationInterceptor(
         {
             var cipher = property.GetValue(instance) as string;
             if (cipher is null) continue;
-            try { property.SetValue(instance, _encryptor.Decrypt(cipher)); }
+            try
+            {
+                var aad = BuildAad((IReadOnlyEntityType)type, instance, property.Name);
+                string? plain = null;
+                if (aad is not null)
+                    try { plain = _encryptor.Decrypt(cipher, aad); } catch { plain = null; }
+                plain ??= _encryptor.Decrypt(cipher);
+                property.SetValue(instance, plain);
+            }
             catch (Exception ex) when (ex is System.Security.Cryptography.CryptographicException or FormatException) { }
         }
 
@@ -87,6 +95,20 @@ public class PropertyDecryptionMaterializationInterceptor(
             if (nestedInstance is null) continue;
             DecryptComplex(nested.ComplexType, nestedInstance);
         }
+    }
+
+        private byte[]? BuildAad(IReadOnlyEntityType entityType, object instance, string propertyName)
+    {
+        try
+        {
+            var table = entityType.GetTableName() ?? entityType.ClrType.Name;
+            var prop = entityType.FindProperty(propertyName);
+            var column = prop?.GetColumnName() ?? propertyName;
+            var pk = entityType.FindPrimaryKey();
+            var pkVal = pk is null ? "0" : string.Join("|", pk.Properties.Select(p => p.PropertyInfo?.GetValue(instance)?.ToString() ?? "null"));
+            return Abstractions.AesGcmPropertyValueEncryptor.BuildAad(table, column, pkVal);
+        }
+        catch { return null; }
     }
 
     internal static IEnumerable<PropertyInfo> EncryptedStringProperties(IReadOnlyEntityType entityType)

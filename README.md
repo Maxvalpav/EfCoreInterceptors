@@ -387,7 +387,7 @@ dotnet pack src/EfCore.Interceptors -c Release -o artifacts
 // Безопасные альтернативы — библиотечные хелперы (todo vNext):
 // await db.Orders.Where(...).ExecuteSoftDeleteAsync(users, timeProvider, ct);
 ```
-Подробно: `docs/bulk-operations-gap.md`.
+Подробно: см. раздел «Ограничения bulk-операций» выше.
 
 ## Провайдеры и совместимость
 
@@ -398,7 +398,7 @@ dotnet pack src/EfCore.Interceptors -c Release -o artifacts
 | InMemory | Не реляционный — команда-тесты на нём бессмысленны для `SqlLogging`/`Caching`/`N+1` |
 
 Фичи EF Core:
-- **`AddDbContextPool` ломает состояние по `DbContext`** (доменные события/outbox счётчики перетекают между запросами). Реализуйте `IResettableService.ResetState()` на контексте или документируйте несовместимость. См. `docs/provider-matrix.md`.
+- **`AddDbContextPool` ломает состояние по `DbContext`** (доменные события/outbox счётчики перетекают между запросами). Реализуйте `IResettableService.ResetState()` на контексте или документируйте несовместимость.
 - **Compiled models** фиксируют query filters — tenant-фильтр, зависящий от рантайма, не сработает.
 - **Complex types** (`entry.ComplexProperties`) теперь учитываются в аудите/ChangeLog/шифровании (рекурсивный обход).
 - **Шифрование**: payload v1 = `0x01|nonce|tag|cipher` + AAD (`table|column|pk`) против cross-column swap; legacy payload без версии дешифруется по fallback.
@@ -406,7 +406,7 @@ dotnet pack src/EfCore.Interceptors -c Release -o artifacts
 ## Нюансы и рекомендации
 
 - **Времена жизни.** Интерсепторы регистрируются на каждый `DbContext`; сами классы stateless и потокобезопасны (кроме документированных буферов доменных событий/outbox, ключуемых по экземпляру контекста через `ConditionalWeakTable`). Один экземпляр можно шарить между контекстами — так работает инвалидация кэша (`WithSecondLevelCache` + общий `CachingCommandInterceptor`).
-- **Мультитенантность**: `ApplyTenantFilters(provider)` захватывает провайдера в кэш модели — первый тенант «залипает». Регистрируйте `TenantModelCacheKeyFactory` (`options.ReplaceService<IModelCacheKeyFactory, TenantModelCacheKeyFactory>()`) или используйте фильтр через свойство контекста `e => e.TenantId == CurrentTenantId`. См. `docs/security-audit.md#1`. Модификация `TenantId` после создания запрещена (immutable) — `CrossTenantAccessException` при `OriginalValue != CurrentValue`.
+- **Мультитенантность**: `ApplyTenantFilters(provider)` захватывает провайдера в кэш модели — первый тенант «залипает». Регистрируйте `TenantModelCacheKeyFactory` (`options.ReplaceService<IModelCacheKeyFactory, TenantModelCacheKeyFactory>()`) или используйте фильтр через свойство контекста `e => e.TenantId == CurrentTenantId`. Модификация `TenantId` после создания запрещена (immutable) — `CrossTenantAccessException` при `OriginalValue != CurrentValue`.
 - **Soft delete не фильтрует чтения.** Обязательно добавляйте глобальный query filter; иначе удалённые строки будут видны. `IgnoreQueryFilters()` также покажет их (удобно для корзины) — а `WithStrictQueryPolicy` может такие вызовы запрещать.
 - **Доменные события** диспетчеризуются строго после коммита (at-least-once внутри процесса). Хендлер упал — получите `InvalidOperationException`; данные уже сохранены. Для гарантированной доставки используйте `WithOutbox()`: события попадают в таблицу в той же транзакции. Outbox processor использует `LockedUntilUtc/AttemptCount` + `FOR UPDATE SKIP LOCKED`-подобный claim для multi-instance.
 - **ChangeLog/Outbox** требуют замапленных сущностей `ChangeLogEntry`/`OutboxMessage`. Дифф пишется по всем свойствам Added/Deleted и по изменённым для Modified (включая owned). Для `Added` с DB-генерируемым PK ключ патчится вторым `SaveChanges` в той же транзакции.
