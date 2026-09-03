@@ -11,7 +11,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\EfCore.Interceptors\EfCore.Interceptors.csproj" />
-    <PackageReference Include="MediatR" Version="12.5.0" />
+    <PackageReference Include="MediatR" Version="14.2.0" />
   </ItemGroup>
 
 </Project>
