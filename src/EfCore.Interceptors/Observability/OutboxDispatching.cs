@@ -50,6 +50,52 @@ public sealed class DefaultOutboxTypeResolver : IOutboxTypeResolver
 }
 
 /// <summary>
+/// Allow-list resolver (security S-6): only explicitly listed event types (or types from
+/// explicitly listed assemblies) resolve. A compromised outbox table cannot smuggle an
+/// arbitrary CLR type into deserialization — unlisted names resolve to <c>null</c> and the
+/// message goes to the dead-letter path instead of a gadget type.
+/// Prefer this over <see cref="DefaultOutboxTypeResolver"/> in production.
+/// </summary>
+public sealed class AllowListOutboxTypeResolver : IOutboxTypeResolver
+{
+    private readonly ConcurrentDictionary<string, Type?> _cache = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, Type> _allowed;
+    private readonly Assembly[] _assemblies;
+
+    /// <param name="allowedTypes">Exact event types that may be resolved.</param>
+    public AllowListOutboxTypeResolver(IEnumerable<Type> allowedTypes)
+        : this(allowedTypes, []) { }
+
+    /// <param name="allowedTypes">Exact event types that may be resolved.</param>
+    /// <param name="assemblies">Assemblies whose types may be resolved by name.</param>
+    public AllowListOutboxTypeResolver(IEnumerable<Type> allowedTypes, IEnumerable<Assembly> assemblies)
+    {
+        _allowed = allowedTypes
+            .Where(t => t is not null)
+            .GroupBy(t => t.FullName ?? t.Name)
+            .ToDictionary(g => g.Key, g => g.First(), StringComparer.Ordinal);
+        _assemblies = assemblies.ToArray();
+    }
+
+    /// <param name="assemblies">Assemblies whose types may be resolved by name.</param>
+    public AllowListOutboxTypeResolver(params Assembly[] assemblies)
+        : this([], assemblies) { }
+
+    public Type? Resolve(string typeName) => _cache.GetOrAdd(typeName, name =>
+    {
+        if (_allowed.TryGetValue(name, out var allowed)) return allowed;
+        foreach (var asm in _assemblies)
+        {
+            Type? found;
+            try { found = asm.GetType(name, throwOnError: false); }
+            catch { continue; }
+            if (found is not null) return found;
+        }
+        return null;
+    });
+}
+
+/// <summary>
 /// <see cref="IOutboxMessageHandler"/> that routes each message to the matching
 /// <see cref="IOutboxEventHandler{TEvent}"/> from DI (built once, invoked via cached
 /// delegates — no per-message reflection). Deserialize via
@@ -85,6 +131,14 @@ public sealed class DispatchingOutboxMessageHandler : IOutboxMessageHandler
             ?? throw new InvalidOperationException(
                 $"Outbox message {message.Id}: cannot resolve event type '{message.Type}'. " +
                 "Register IOutboxTypeResolver or use assembly-qualified type names.");
+        if (!typeof(IDomainEvent).IsAssignableFrom(eventType))
+        {
+            // Fail closed on type confusion (security S-6): the outbox only ever stores
+            // domain events, so resolving anything else means a tampered/compromised table.
+            throw new InvalidOperationException(
+                $"Outbox message {message.Id}: resolved type '{message.Type}' is not a domain event. " +
+                "Use AllowListOutboxTypeResolver to restrict resolvable types.");
+        }
         var evt = (_deserializer is not null
                 ? _deserializer(message.PayloadJson, eventType)
                 : JsonSerializer.Deserialize(message.PayloadJson, eventType, _json))

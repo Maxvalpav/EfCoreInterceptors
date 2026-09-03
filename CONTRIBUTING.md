@@ -38,6 +38,7 @@ branches compiling on both (CI builds both TFMs).
 | −100 | soft delete | `SoftDelete` |
 | 0 | audit | `Audit`, `ShadowAudit` |
 | 50 | version | `VersionIncrement` |
+| 75 | encryption | `PropertyEncryption` (must precede changelog — changelog captures ciphertext, never plaintext) |
 | 100 | changelog | `ChangeLog` |
 | 200 | outbox | `Outbox` |
 | 300 | domain events | `DomainEvents` |

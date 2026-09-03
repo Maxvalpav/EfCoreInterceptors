@@ -137,14 +137,18 @@ public sealed partial class EfInterceptorsSetup
 
     /// <summary>
     /// Rejects forbidden query shapes at compilation: IgnoreQueryFilters by default,
-    /// optionally ExecuteDelete/ExecuteUpdate.
+    /// optionally ExecuteDelete/ExecuteUpdate, and optionally untagged raw SQL
+    /// (FromSql/SqlQuery bypass query filters — allow-list via TagWith("tenant-safe")).
     /// </summary>
     public EfInterceptorsSetup WithStrictQueryPolicy(
         bool forbidIgnoreQueryFilters = true,
         bool forbidExecuteDelete = false,
-        bool forbidExecuteUpdate = false)
+        bool forbidExecuteUpdate = false,
+        bool forbidUntaggedRawSql = false,
+        string rawSqlBypassTag = "tenant-safe")
         => Add(new StrictQueryPolicyQueryExpressionInterceptor(
-            forbidIgnoreQueryFilters, forbidExecuteDelete, forbidExecuteUpdate));
+            forbidIgnoreQueryFilters, forbidExecuteDelete, forbidExecuteUpdate,
+            forbidUntaggedRawSql, rawSqlBypassTag));
 
     /// <summary>Guards unbounded queries (no Take/First/Single).</summary>
     public EfInterceptorsSetup WithUnboundedQueryGuard(int maxRows = 0)

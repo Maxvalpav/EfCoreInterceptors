@@ -23,7 +23,8 @@ public class ArchitectureTests
         var bad = asm.GetTypes().Where(t => t.Namespace?.Contains("Saving") == true)
             .SelectMany(t => t.GetMethods(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static))
             .Where(m => m.GetMethodBody() != null)
-            .Where(m => {
+            .Where(m =>
+            {
                 try { var il = m.GetMethodBody()!.GetILAsByteArray(); return il != null && System.Text.Encoding.UTF8.GetString(il).Contains("UtcNow"); } catch { return false; }
             }).ToList();
         // We use TimeProvider everywhere — allow 0 direct UtcNow
@@ -59,6 +60,7 @@ public class ArchitectureTests
         Assert.True(Get("SoftDeleteSaveChangesInterceptor") < Get("AuditSaveChangesInterceptor"), "soft-delete before audit");
         Assert.True(Get("AuditSaveChangesInterceptor") < Get("VersionIncrementSaveChangesInterceptor"), "audit before version");
         Assert.True(Get("VersionIncrementSaveChangesInterceptor") < Get("ChangeLogSaveChangesInterceptor"), "version before changelog");
+        Assert.True(Get("PropertyEncryptionSaveChangesInterceptor") < Get("ChangeLogSaveChangesInterceptor"), "encryption before changelog (changelog captures ciphertext, never plaintext)");
         Assert.True(Get("ChangeLogSaveChangesInterceptor") < Get("OutboxSaveChangesInterceptor"), "changelog before outbox");
         Assert.True(Get("OutboxSaveChangesInterceptor") < Get("DomainEventsSaveChangesInterceptor"), "outbox before domain-events");
     }

@@ -15,8 +15,13 @@ namespace EfCore.Interceptors.Saving;
 /// are impossible by design.
 /// </summary>
 public class PropertyEncryptionSaveChangesInterceptor(
-    IPropertyValueEncryptor encryptor) : SaveChangesInterceptor
+    IPropertyValueEncryptor encryptor) : SaveChangesInterceptor, Abstractions.IOrderedInterceptor
 {
+    /// <summary>
+    /// Runs after Audit/Version stamps and before ChangeLog (100): the change log must
+    /// capture ciphertext, never plaintext (security S-5). Pinned by ChangeLogEncryptionTests.
+    /// </summary>
+    public int Order => InterceptorOrder.Encryption;
     private readonly IPropertyValueEncryptor _encryptor = encryptor;
     private readonly ConcurrentDictionary<IProperty, bool> _encryptedCache = new();
     private readonly System.Runtime.CompilerServices.ConditionalWeakTable<DbContext, List<PlainBackup>> _backups = new();

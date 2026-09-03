@@ -26,6 +26,7 @@ public static class InterceptorOrder
     public const int SoftDelete = -100;
     public const int Audit = 0;
     public const int Version = 50;
+    public const int Encryption = 75;
     public const int ChangeLog = 100;
     public const int Outbox = 200;
     public const int DomainEvents = 300;
@@ -127,10 +128,22 @@ public sealed partial class EfInterceptorsSetup
     /// Stamps TenantId on inserts and rejects cross-tenant modifications.
     /// Also auto-registers <c>TenantModelCacheKeyFactory</c> so the model cache
     /// varies per tenant (02.6) — no manual <c>ReplaceService</c> needed.
+    /// Tenant query filters are bypassable via <c>IgnoreQueryFilters()</c>/raw SQL, so a
+    /// strict query policy (forbid <c>IgnoreQueryFilters</c>) is added by default
+    /// (security S-2); pass <c>strictQueryPolicy: false</c> to opt out, e.g. for
+    /// admin/recycle-bin contexts. Raw-SQL strictness stays opt-in — see
+    /// <c>WithStrictQueryPolicy(forbidUntaggedRawSql: true)</c>.
     /// </summary>
-    public EfInterceptorsSetup WithMultiTenancy(Abstractions.ITenantProvider tenantProvider)
+    public EfInterceptorsSetup WithMultiTenancy(
+        Abstractions.ITenantProvider tenantProvider,
+        bool strictQueryPolicy = true)
     {
         _tenantProvider = tenantProvider;
-        return Add(new Saving.MultiTenancySaveChangesInterceptor(tenantProvider));
+        Add(new Saving.MultiTenancySaveChangesInterceptor(tenantProvider));
+        if (strictQueryPolicy && !_interceptors.OfType<Queries.StrictQueryPolicyQueryExpressionInterceptor>().Any())
+        {
+            Add(new Queries.StrictQueryPolicyQueryExpressionInterceptor(forbidIgnoreQueryFilters: true));
+        }
+        return this;
     }
 }

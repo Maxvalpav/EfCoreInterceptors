@@ -1,4 +1,5 @@
 using System.Buffers;
+using System.Reflection;
 using System.Text;
 using System.Text.Json;
 using EfCore.Interceptors.Abstractions;
@@ -6,6 +7,7 @@ using EfCore.Interceptors.Entities;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.ChangeTracking;
 using Microsoft.EntityFrameworkCore.Diagnostics;
+using Microsoft.EntityFrameworkCore.Metadata;
 
 namespace EfCore.Interceptors.Saving;
 
@@ -259,11 +261,13 @@ public class ChangeLogSaveChangesInterceptor(
         foreach (var p in entry.Properties)
         {
             if (entry.State == EntityState.Modified && !p.IsModified) continue;
+            if (IsExcludedFromChangeLog(p.Metadata)) continue;
+            var redacted = IsEncryptedProperty(p.Metadata);
             diff.Add(new Dictionary<string, object?>
             {
                 ["property"] = p.Metadata.Name,
-                ["old"] = entry.State == EntityState.Added ? null : p.OriginalValue,
-                ["new"] = entry.State == EntityState.Deleted ? null : p.CurrentValue
+                ["old"] = redacted ? RedactedMarker : (entry.State == EntityState.Added ? null : p.OriginalValue),
+                ["new"] = redacted ? RedactedMarker : (entry.State == EntityState.Deleted ? null : p.CurrentValue)
             });
         }
         // Complex types (EF8+) recursive — provider-matrix 2.4, logic-audit #6
@@ -287,16 +291,30 @@ public class ChangeLogSaveChangesInterceptor(
         foreach (var p in complex.Properties)
         {
             if (state == EntityState.Modified && !p.IsModified) continue;
+            if (IsExcludedFromChangeLog(p.Metadata)) continue;
+            var redacted = IsEncryptedProperty(p.Metadata);
             diff.Add(new Dictionary<string, object?>
             {
                 ["property"] = $"{complex.Metadata.Name}.{p.Metadata.Name}",
-                ["old"] = state == EntityState.Added ? null : p.OriginalValue,
-                ["new"] = state == EntityState.Deleted ? null : p.CurrentValue
+                ["old"] = redacted ? RedactedMarker : (state == EntityState.Added ? null : p.OriginalValue),
+                ["new"] = redacted ? RedactedMarker : (state == EntityState.Deleted ? null : p.CurrentValue)
             });
         }
         foreach (var nested in complex.ComplexProperties)
             AddComplexDiff(nested, state, diff);
     }
+
+    /// <summary>
+    /// Marker stored in place of <c>[Encrypted]</c> values (security S-5): neither the
+    /// decrypted <c>OriginalValue</c> nor the ciphertext ever reaches the audit trail.
+    /// </summary>
+    public const string RedactedMarker = "[encrypted]";
+
+    private static bool IsEncryptedProperty(IProperty property) =>
+        property.PropertyInfo?.GetCustomAttribute<EncryptedAttribute>() is not null;
+
+    private static bool IsExcludedFromChangeLog(IProperty property) =>
+        property.PropertyInfo?.GetCustomAttribute<ExcludeFromChangeLogAttribute>() is not null;
 
     private static string SerializeKey(EntityEntry entry)
     {
