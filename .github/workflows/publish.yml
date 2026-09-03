@@ -30,8 +30,33 @@ jobs:
       - name: Pack
         run: dotnet pack src/EfCore.Interceptors/EfCore.Interceptors.csproj -c Release -o artifacts
 
+      - name: Pack Testing
+        run: dotnet pack src/EfCore.Interceptors.Testing/EfCore.Interceptors.Testing.csproj -c Release -o artifacts
+
+      - name: Pack satellite packages
+        run: >
+          dotnet pack src/EfCore.Interceptors.HealthChecks/EfCore.Interceptors.HealthChecks.csproj -c Release -o artifacts &&
+          dotnet pack src/EfCore.Interceptors.Caching.Redis/EfCore.Interceptors.Caching.Redis.csproj -c Release -o artifacts &&
+          dotnet pack src/EfCore.Interceptors.MassTransit/EfCore.Interceptors.MassTransit.csproj -c Release -o artifacts &&
+          dotnet pack src/EfCore.Interceptors.OpenTelemetry/EfCore.Interceptors.OpenTelemetry.csproj -c Release -o artifacts &&
+          dotnet pack src/EfCore.Interceptors.Dashboard/EfCore.Interceptors.Dashboard.csproj -c Release -o artifacts
+
       - name: List artifacts
         run: ls -lah artifacts/
+
+      - name: SBOM (SPDX, best-effort)
+        uses: anchore/sbom-action@v0
+        continue-on-error: true
+        with:
+          path: ./artifacts/
+          format: spdx-json
+          output-file: sbom.spdx.json
+
+      - name: Upload SBOM artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom
+          path: sbom.spdx.json
 
       - name: Push to NuGet
         run: dotnet nuget push "artifacts/*.nupkg" --api-key ${{ secrets.NUGET_API_KEY }} --source https://api.nuget.org/v3/index.json --skip-duplicate

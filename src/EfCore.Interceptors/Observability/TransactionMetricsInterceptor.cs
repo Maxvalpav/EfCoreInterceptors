@@ -14,7 +14,7 @@ public class TransactionMetricsInterceptor : DbTransactionInterceptor
     private static readonly Counter<long> StaticCommitted = SharedMeter.Meter.CreateCounter<long>("ef.transaction.committed");
     private static readonly Counter<long> StaticRolledBack = SharedMeter.Meter.CreateCounter<long>("ef.transaction.rolledback");
     private static readonly Counter<long> StaticFailed = SharedMeter.Meter.CreateCounter<long>("ef.transaction.failed");
-    private static readonly Histogram<double> StaticDuration = SharedMeter.Meter.CreateHistogram<double>("ef.transaction.duration", unit: "ms");
+    private static readonly Histogram<double> StaticDuration = SharedMeter.DurationHistogram(SharedMeter.Meter, "ef.transaction.duration", "ms");
 
     private readonly Counter<long> _started = StaticStarted;
     private readonly Counter<long> _committed = StaticCommitted;

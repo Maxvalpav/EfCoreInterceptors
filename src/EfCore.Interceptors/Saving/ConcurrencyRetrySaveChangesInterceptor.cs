@@ -139,6 +139,8 @@ public class ConcurrencyRetrySaveChangesInterceptor(
             GetState(context).Retrying = true;
             try
             {
+                Observability.SharedMeter.SaveChangesRetries.Add(1,
+                    new KeyValuePair<string, object?>("policy", _policy.ToString()));
                 context.SaveChanges();
                 Cleanup(context);
                 return InterceptionResult.Suppress(); // retried save committed — caller sees success
@@ -203,6 +205,8 @@ public class ConcurrencyRetrySaveChangesInterceptor(
             GetState(context).Retrying = true;
             try
             {
+                Observability.SharedMeter.SaveChangesRetries.Add(1,
+                    new KeyValuePair<string, object?>("policy", _policy.ToString()));
                 await context.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
                 Cleanup(context);
                 return InterceptionResult.Suppress();

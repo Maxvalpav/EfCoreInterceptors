@@ -9,6 +9,8 @@
 
   <ItemGroup>
     <PackageReference Include="coverlet.collector" Version="6.0.4" />
+    <PackageReference Include="MassTransit" Version="8.3.0" />
+    <PackageReference Include="OpenTelemetry" Version="1.12.0" />
     <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Version="10.0.11" />
     <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="10.0.11" />
     <PackageReference Include="MediatR" Version="12.5.0" />
@@ -20,11 +22,20 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\EfCore.Interceptors\EfCore.Interceptors.csproj" />
+    <ProjectReference Include="..\..\src\EfCore.Interceptors.Dashboard\EfCore.Interceptors.Dashboard.csproj" />
+    <ProjectReference Include="..\..\src\EfCore.Interceptors.HealthChecks\EfCore.Interceptors.HealthChecks.csproj" />
+    <ProjectReference Include="..\..\src\EfCore.Interceptors.MassTransit\EfCore.Interceptors.MassTransit.csproj" />
+    <ProjectReference Include="..\..\src\EfCore.Interceptors.OpenTelemetry\EfCore.Interceptors.OpenTelemetry.csproj" />
     <ProjectReference Include="..\..\src\EfCore.Interceptors.MediatR\EfCore.Interceptors.MediatR.csproj" />
+    <ProjectReference Include="..\..\src\EfCore.Interceptors.Testing\EfCore.Interceptors.Testing.csproj" />
   </ItemGroup>
 
   <ItemGroup>
     <Using Include="Xunit" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
   </ItemGroup>
 
 </Project>

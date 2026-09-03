@@ -23,11 +23,11 @@ public class MetricsCommandInterceptor : DbCommandInterceptor
             ? Observability.SharedMeter.Meter
             : new Meter(meterName ?? "EfCore.Interceptors", version ?? "1.0.0");
         // OTel semconv: db.client.operation.duration in seconds (api-design-audit #7), keep ms compat as secondary
-        _durationMs = _meter.CreateHistogram<double>("ef.command.duration", unit: "ms");
+        _durationMs = Observability.SharedMeter.DurationHistogram(_meter, "ef.command.duration", "ms");
         _executed = _meter.CreateCounter<long>("ef.command.executed");
         _failed = _meter.CreateCounter<long>("ef.command.failed");
         // Secondary OTel histogram in seconds for semconv compliance
-        _durationS = _meter.CreateHistogram<double>("db.client.operation.duration", unit: "s");
+        _durationS = Observability.SharedMeter.DurationHistogram(_meter, "db.client.operation.duration", "s");
     }
     private readonly Histogram<double> _durationS;
 

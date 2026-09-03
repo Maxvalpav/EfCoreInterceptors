@@ -12,12 +12,16 @@ namespace EfCore.Interceptors.Commands;
 /// N+1 query detector: counts executions of identical SQL templates per DbContext instance
 /// (EF parameterizes queries, so the same template repeated with different values is the classic
 /// N+1 signature) and logs a warning once per template when the threshold is crossed.
+/// With <c>captureStackTrace</c> (03.7) the warning also carries the user call site and an
+/// eager-loading hint — off by default (stack capture costs microseconds per command).
 /// </summary>
 public class NPlusOneDetectorCommandInterceptor(
     int threshold = 5,
-    ILoggerFactory? loggerFactory = null) : DbCommandInterceptor
+    ILoggerFactory? loggerFactory = null,
+    bool captureStackTrace = false) : DbCommandInterceptor
 {
     private readonly int _threshold = threshold;
+    private readonly bool _captureStackTrace = captureStackTrace;
     private readonly ILogger _logger =
         loggerFactory?.CreateLogger("EfCore.Interceptors.NPlusOne") ?? NullLogger.Instance;
 
@@ -49,10 +53,46 @@ public class NPlusOneDetectorCommandInterceptor(
         var hits = counters.AddOrUpdate(key, 1, (_, existing) => existing + 1);
         if (hits == _threshold)
         {
+            if (!_captureStackTrace)
+            {
+                _logger.LogWarning(
+                    "Possible N+1 detected: the same command has executed {Hits} times in this context. " +
+                    "Consider eager loading (Include) or batching. Sql: {Sql}",
+                    hits, sql);
+                return;
+            }
+            var site = FindUserCallSite();
             _logger.LogWarning(
-                "Possible N+1 detected: the same command has executed {Hits} times in this context. " +
-                "Consider eager loading (Include) or batching. Sql: {Sql}",
-                hits, sql);
+                "Possible N+1 detected: {Template} executed {Hits} times in this context{Site}. " +
+                "Suggestion: eager-load the collection at the query root with .Include(...) or project with Select. Sql: {Sql}",
+                ShortTemplate(sql), hits, site, sql);
         }
+    }
+
+    private static string ShortTemplate(string sql)
+        => sql.Length > 160 ? sql[..160] + "..." : sql;
+
+    private static string FindUserCallSite()
+    {
+        try
+        {
+            var frames = new System.Diagnostics.StackTrace(fNeedFileInfo: true).GetFrames();
+            if (frames is null) return string.Empty;
+            foreach (var frame in frames)
+            {
+                var method = frame.GetMethod();
+                var ns = method?.DeclaringType?.Namespace ?? string.Empty;
+                if (ns.StartsWith("EfCore.Interceptors", StringComparison.Ordinal)
+                    || ns.StartsWith("Microsoft.EntityFrameworkCore", StringComparison.Ordinal)
+                    || ns.StartsWith("System.", StringComparison.Ordinal))
+                    continue;
+                var location = frame.GetFileName() is { } file
+                    ? $" at {System.IO.Path.GetFileName(file)}:{frame.GetFileLineNumber()}"
+                    : string.Empty;
+                return $" — first user frame: {method?.DeclaringType?.FullName}.{method?.Name}(){location}";
+            }
+        }
+        catch { }
+        return string.Empty;
     }
 }

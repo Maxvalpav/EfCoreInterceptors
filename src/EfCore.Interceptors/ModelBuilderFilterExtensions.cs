@@ -17,6 +17,7 @@ public static class ModelBuilderFilterExtensions
 {
     private const string SoftDeleteKey = "EfCoreInterceptors.SoftDelete";
     private const string TenantKey = "EfCoreInterceptors.Tenant";
+    private const string RlsKeyPrefix = "EfCoreInterceptors.Rls.";
 
     /// <summary>
     /// Adds <c>e =&gt; !e.IsDeleted</c> to every entity type implementing
@@ -134,6 +135,46 @@ public static class ModelBuilderFilterExtensions
     {
         var sourceParameter = filter.Parameters.Single();
         return new ReplaceParameterVisitor(sourceParameter, target).Visit(filter.Body)!;
+    }
+
+    /// <summary>
+    /// Row-level security filter for one entity type (03.2): rows not matching the
+    /// predicate are hidden from every query. Pass the configuring context
+    /// (<c>this</c> in <c>OnModelCreating</c>) — EF substitutes the <em>executing</em>
+    /// instance for it on every query, so per-request state is always fresh, unlike
+    /// captured variables or statics which get baked into the compiled query plan.
+    /// <example>
+    /// <c>modelBuilder.ApplyRowLevelSecurity(this, (AppDb ctx, Document d) => ctx.BypassRls || d.OwnerId == ctx.CurrentUser)</c>
+    /// with <c>bool BypassRls => ElevatedSession.IsElevated</c> on the context:
+    /// system code escalates via <c>using (ElevatedSession.Elevate("reason"))</c> (audited).
+    /// </example>
+    /// Pair with <c>WithRowLevelSecurity</c> for the write-side guard.
+    /// </summary>
+    public static ModelBuilder ApplyRowLevelSecurity<TContext, T>(
+        this ModelBuilder modelBuilder,
+        TContext context,
+        System.Linq.Expressions.Expression<System.Func<TContext, T, bool>> filter)
+        where TContext : DbContext
+        where T : class
+    {
+        ArgumentNullException.ThrowIfNull(filter);
+        var entityType = modelBuilder.Model.FindEntityType(typeof(T))
+            ?? throw new InvalidOperationException($"Entity {typeof(T).Name} is not part of the model.");
+        var entityParameter = Expression.Parameter(typeof(T), "e");
+        var contextConstant = Expression.Constant(context, typeof(TContext));
+        var rebinder = new DualParameterReplacer(
+            filter.Parameters[0], contextConstant, filter.Parameters[1], entityParameter);
+        var body = rebinder.Visit(filter.Body)!;
+        MergeFilter(entityType, RlsKeyPrefix + typeof(T).Name, entityParameter, body);
+        return modelBuilder;
+    }
+
+    private sealed class DualParameterReplacer(
+        ParameterExpression ctxFrom, Expression ctxTo,
+        ParameterExpression entityFrom, ParameterExpression entityTo) : ExpressionVisitor
+    {
+        protected override Expression VisitParameter(ParameterExpression node)
+            => node == ctxFrom ? ctxTo : node == entityFrom ? entityTo : base.VisitParameter(node);
     }
 
     private sealed class ReplaceParameterVisitor(ParameterExpression from, ParameterExpression to)

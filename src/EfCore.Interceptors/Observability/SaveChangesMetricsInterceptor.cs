@@ -12,7 +12,7 @@ namespace EfCore.Interceptors.Observability;
 /// </summary>
 public class SaveChangesMetricsInterceptor : SaveChangesInterceptor
 {
-    private static readonly Histogram<double> StaticDuration = SharedMeter.Meter.CreateHistogram<double>("ef.save.duration", unit: "ms");
+    private static readonly Histogram<double> StaticDuration = SharedMeter.DurationHistogram(SharedMeter.Meter, "ef.save.duration", "ms");
     private static readonly Counter<long> StaticExecuted = SharedMeter.Meter.CreateCounter<long>("ef.save.executed");
     private static readonly Counter<long> StaticFailed = SharedMeter.Meter.CreateCounter<long>("ef.save.failed");
     private static readonly Counter<long> StaticEntities = SharedMeter.Meter.CreateCounter<long>("ef.save.entities");

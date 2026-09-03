@@ -8,7 +8,13 @@
   </Folder>
   <Folder Name="/src/">
     <Project Path="src/EfCore.Interceptors.Analyzers/EfCore.Interceptors.Analyzers.csproj" />
+    <Project Path="src/EfCore.Interceptors.Caching.Redis/EfCore.Interceptors.Caching.Redis.csproj" />
+    <Project Path="src/EfCore.Interceptors.Dashboard/EfCore.Interceptors.Dashboard.csproj" />
+    <Project Path="src/EfCore.Interceptors.HealthChecks/EfCore.Interceptors.HealthChecks.csproj" />
+    <Project Path="src/EfCore.Interceptors.MassTransit/EfCore.Interceptors.MassTransit.csproj" />
     <Project Path="src/EfCore.Interceptors.MediatR/EfCore.Interceptors.MediatR.csproj" />
+    <Project Path="src/EfCore.Interceptors.OpenTelemetry/EfCore.Interceptors.OpenTelemetry.csproj" />
+    <Project Path="src/EfCore.Interceptors.Testing/EfCore.Interceptors.Testing.csproj" />
     <Project Path="src/EfCore.Interceptors/EfCore.Interceptors.csproj" />
   </Folder>
   <Folder Name="/tests/">

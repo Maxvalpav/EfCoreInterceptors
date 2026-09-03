@@ -17,8 +17,15 @@ public class TenantModelCacheKeyFactory : IModelCacheKeyFactory
     public object Create(DbContext context, bool designTime)
     {
         // Preserve default behavior for designTime, otherwise include tenant.
-        var tenantId = (context as ITenantProviderAccessor)?.CurrentTenantId
+        // Never throw: ITenantProvider may be passed to the interceptor directly
+        // (WithMultiTenancy) without being registered in EF's internal provider.
+        string? tenantId = null;
+        try
+        {
+            tenantId = (context as ITenantProviderAccessor)?.CurrentTenantId
                        ?? context.GetService<ITenantProvider>()?.CurrentTenantId;
+        }
+        catch (InvalidOperationException) { }
 
         // Use record for proper equality.
         return new TenantCacheKey(context.GetType(), tenantId, designTime);

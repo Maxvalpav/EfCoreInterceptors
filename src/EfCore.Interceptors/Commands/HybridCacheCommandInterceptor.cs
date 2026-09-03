@@ -8,6 +8,7 @@ namespace EfCore.Interceptors.Commands;
 /// Second-level cache backed by IMemoryCache with TTL and size limit.
 /// Properly overrides ReaderExecuting to use IMemoryCache instead of hiding base dictionary.
 /// </summary>
+[Obsolete("No single-flight, no size limits, no table invalidation, no metrics (06.7): use CachingCommandInterceptor (WithSecondLevelCache) instead.")]
 public class HybridCacheCommandInterceptor : DbCommandInterceptor
 {
     private readonly IMemoryCache _cache;

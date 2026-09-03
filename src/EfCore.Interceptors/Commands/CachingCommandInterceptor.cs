@@ -1,7 +1,9 @@
 using System.Collections.Concurrent;
 using System.Data;
 using System.Data.Common;
+using System.Diagnostics;
 using EfCore.Interceptors.Abstractions;
+using EfCore.Interceptors.Observability;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.EntityFrameworkCore.Storage;
@@ -22,19 +24,33 @@ public class CachingCommandInterceptor : DbCommandInterceptor, Microsoft.EntityF
     private readonly TimeSpan _timeToLive;
     private readonly bool _skipInsideTransactions;
     private readonly bool _invalidateOnWrites;
-    private readonly System.Runtime.CompilerServices.ConditionalWeakTable<System.Data.Common.DbTransaction, object> _pendingTx = new();
-    private sealed class PendingTag { }
+    private readonly int _maxRowsPerEntry;
+    private readonly long _maxBytesPerEntry;
+    private readonly int _maxEntries;
+    // Table dependencies for targeted invalidation (06.4): cache key -> tables the
+    // query read, plus a per-table generation counter bumped on every write.
+    private readonly ConcurrentDictionary<string, string[]> _keyTables = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, long> _generations = new(StringComparer.OrdinalIgnoreCase);
+    // Single-flight gates against thundering herd (06.1): concurrent misses for the
+    // same key coalesce onto one DB round-trip; losers re-check the cache after.
+    private readonly ConcurrentDictionary<string, SemaphoreSlim> _gates = new();
+    private readonly System.Runtime.CompilerServices.ConditionalWeakTable<System.Data.Common.DbTransaction, HashSet<string>> _pendingTx = new();
 
     public CachingCommandInterceptor(
         TimeSpan? timeToLive = null,
         bool skipInsideTransactions = true,
         bool invalidateOnWrites = false,
         int maxEntries = 1000,
-        IQueryCacheStore? store = null)
+        IQueryCacheStore? store = null,
+        int maxRowsPerEntry = 10_000,
+        long maxBytesPerEntry = 8 * 1024 * 1024)
     {
         _timeToLive = timeToLive ?? TimeSpan.FromSeconds(30);
         _skipInsideTransactions = skipInsideTransactions;
         _invalidateOnWrites = invalidateOnWrites;
+        _maxRowsPerEntry = Math.Max(1, maxRowsPerEntry);
+        _maxBytesPerEntry = Math.Max(1024, maxBytesPerEntry);
+        _maxEntries = Math.Max(1, maxEntries);
         _store = store ?? new MemoryQueryCacheStore(_timeToLive, maxEntries);
     }
 
@@ -42,11 +58,63 @@ public class CachingCommandInterceptor : DbCommandInterceptor, Microsoft.EntityF
     public int Count => _store.Count;
 
     /// <summary>Drops every cached query result.</summary>
-    public void InvalidateAll() => _store.Clear();
+    public void InvalidateAll()
+    {
+        _store.Clear();
+        _keyTables.Clear();
+    }
     public static void Clear(Microsoft.EntityFrameworkCore.DbContext context) { /* global cache — per-context clear no-op; pool does not leak per-context state */ }
 
     /// <summary>Drops cached results whose SQL contains the given fragment (e.g. a table name).</summary>
-    public void Invalidate(string sqlFragment) => _store.Invalidate(sqlFragment);
+    public void Invalidate(string sqlFragment)
+    {
+        _store.Invalidate(sqlFragment);
+        foreach (var k in _keyTables.Keys.Where(k => k.Contains(sqlFragment, StringComparison.OrdinalIgnoreCase)).ToList())
+            _keyTables.TryRemove(k, out _);
+    }
+
+    /// <summary>
+    /// Targeted invalidation (06.4): drops only entries that read the given table.
+    /// Prefer over <see cref="InvalidateAll"/> on write-heavy workloads.
+    /// </summary>
+    public void InvalidateTable(string table)
+    {
+        if (string.IsNullOrWhiteSpace(table)) return;
+        InvalidateTables([table]);
+    }
+
+    /// <summary>Current write generation of a table (bumps on every invalidating write).</summary>
+    public long Generation(string table)
+        => _generations.TryGetValue(table, out var g) ? g : 0;
+
+    private void InvalidateTables(IEnumerable<string> tables)
+    {
+        var set = new HashSet<string>(tables, StringComparer.OrdinalIgnoreCase);
+        if (set.Count == 0)
+        {
+            InvalidateAll(); // unparseable write — fail safe to full clear
+            return;
+        }
+        foreach (var t in set) _generations.AddOrUpdate(t, 1, (_, g) => g + 1);
+        foreach (var kv in _keyTables)
+        {
+            if (kv.Value.Any(t => set.Contains(t)))
+            {
+                _store.Invalidate(kv.Key); // exact-key eviction via store scan
+                _keyTables.TryRemove(kv.Key, out _);
+            }
+        }
+        TrimKeyTables();
+    }
+
+    private void TrimKeyTables()
+    {
+        // _keyTables must not outgrow the store (entries evicted by TTL/SizeLimit
+        // inside the store do not notify us): bound it loosely.
+        if (_keyTables.Count <= 4 * _maxEntries) return;
+        foreach (var k in _keyTables.Keys.Take(_keyTables.Count - 4 * _maxEntries).ToList())
+            _keyTables.TryRemove(k, out _);
+    }
 
     public override InterceptionResult<DbDataReader> ReaderExecuting(
         DbCommand command, CommandEventData eventData, InterceptionResult<DbDataReader> result)
@@ -62,12 +130,27 @@ public class CachingCommandInterceptor : DbCommandInterceptor, Microsoft.EntityF
             return InterceptionResult<DbDataReader>.SuppressWithResult(new CachedDataReader(cached));
         }
 
-        using (var reader = command.ExecuteReader())
+        // Single-flight (06.1): only one thread fetches; the rest wait and re-check.
+        var gate = _gates.GetOrAdd(key, _ => new SemaphoreSlim(1, 1));
+        gate.Wait();
+        try
         {
-            var snapshot = Buffer(reader);
-            AddOrEvict(key, snapshot);
-            return InterceptionResult<DbDataReader>.SuppressWithResult(new CachedDataReader(snapshot));
+            if (TryGet(key, out cached))
+            {
+                return InterceptionResult<DbDataReader>.SuppressWithResult(new CachedDataReader(cached));
+            }
+
+            using (var reader = command.ExecuteReader())
+            {
+                // Buffer always captures the rows for serving; the entry is stored
+                // only when it fits the size limits (06.2) and has a single result set.
+                var (snapshot, cacheable, rejectReason) = Buffer(reader);
+                if (cacheable) AddOrEvict(key, snapshot, ParseReadTables(command.CommandText));
+                else Bypass(key, rejectReason);
+                return InterceptionResult<DbDataReader>.SuppressWithResult(new CachedDataReader(snapshot));
+            }
         }
+        finally { gate.Release(); _gates.TryRemove(key, out _); }
     }
 
     public override async ValueTask<InterceptionResult<DbDataReader>> ReaderExecutingAsync(
@@ -85,23 +168,41 @@ public class CachingCommandInterceptor : DbCommandInterceptor, Microsoft.EntityF
             return InterceptionResult<DbDataReader>.SuppressWithResult(new CachedDataReader(cached));
         }
 
-        await using (var reader = await command.ExecuteReaderAsync(cancellationToken))
+        var gate = _gates.GetOrAdd(key, _ => new SemaphoreSlim(1, 1));
+        await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
         {
-            var snapshot = await BufferAsync(reader, cancellationToken);
-            AddOrEvict(key, snapshot);
-            return InterceptionResult<DbDataReader>.SuppressWithResult(new CachedDataReader(snapshot));
+            if (TryGet(key, out cached))
+            {
+                return InterceptionResult<DbDataReader>.SuppressWithResult(new CachedDataReader(cached));
+            }
+
+            await using (var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false))
+            {
+                var (snapshot, cacheable, rejectReason) = await BufferAsync(reader, cancellationToken).ConfigureAwait(false);
+                if (cacheable) AddOrEvict(key, snapshot, ParseReadTables(command.CommandText));
+                else Bypass(key, rejectReason);
+                return InterceptionResult<DbDataReader>.SuppressWithResult(new CachedDataReader(snapshot));
+            }
         }
+        finally { gate.Release(); _gates.TryRemove(key, out _); }
     }
 
     /// <summary>
     /// Optional write-through invalidation: when enabled, any non-query (INSERT/UPDATE/DELETE,
-    /// including raw SQL) clears the cache so subsequent reads see fresh data.
-    /// Covers NonQuery, Scalar and Reader writes (INSERT RETURNING).
+    /// including raw SQL) evicts only entries that read the written tables (06.4),
+    /// so unrelated cached queries keep serving. Covers NonQuery, Scalar and Reader
+    /// writes (INSERT RETURNING). Eviction happens on commit inside transactions.
     /// </summary>
-    private void MarkPending(System.Data.Common.DbTransaction? tx)
+    private void MarkPending(System.Data.Common.DbTransaction? tx, string sql)
     {
-        if (tx is null) InvalidateAll();
-        else _pendingTx.AddOrUpdate(tx, new PendingTag());
+        var tables = ParseWriteTables(sql);
+        if (tx is null) { InvalidateTables(tables); return; }
+        if (_pendingTx.TryGetValue(tx, out var existing))
+        {
+            lock (existing) foreach (var t in tables) existing.Add(t);
+        }
+        else _pendingTx.Add(tx, new HashSet<string>(tables, StringComparer.OrdinalIgnoreCase));
     }
 
     public override int NonQueryExecuted(DbCommand command, CommandExecutedEventData eventData, int result)
@@ -109,8 +210,7 @@ public class CachingCommandInterceptor : DbCommandInterceptor, Microsoft.EntityF
         if (_invalidateOnWrites)
         {
             var tx = eventData.Context?.Database.CurrentTransaction?.GetDbTransaction();
-            if (tx is not null) MarkPending(tx);
-            else InvalidateAll();
+            MarkPending(tx, command.CommandText);
         }
 
         return base.NonQueryExecuted(command, eventData, result);
@@ -123,8 +223,7 @@ public class CachingCommandInterceptor : DbCommandInterceptor, Microsoft.EntityF
         if (_invalidateOnWrites)
         {
             var tx = eventData.Context?.Database.CurrentTransaction?.GetDbTransaction();
-            if (tx is not null) MarkPending(tx);
-            else InvalidateAll();
+            MarkPending(tx, command.CommandText);
         }
 
         return await base.NonQueryExecutedAsync(command, eventData, result, cancellationToken);
@@ -135,8 +234,7 @@ public class CachingCommandInterceptor : DbCommandInterceptor, Microsoft.EntityF
         if (_invalidateOnWrites && SqlWriteDetector.IsWrite(command.CommandText))
         {
             var tx = eventData.Context?.Database.CurrentTransaction?.GetDbTransaction();
-            if (tx is not null) MarkPending(tx);
-            else InvalidateAll();
+            MarkPending(tx, command.CommandText);
         }
 
         return base.ReaderExecuted(command, eventData, result);
@@ -147,8 +245,7 @@ public class CachingCommandInterceptor : DbCommandInterceptor, Microsoft.EntityF
         if (_invalidateOnWrites && SqlWriteDetector.IsWrite(command.CommandText))
         {
             var tx = eventData.Context?.Database.CurrentTransaction?.GetDbTransaction();
-            if (tx is not null) MarkPending(tx);
-            else InvalidateAll();
+            MarkPending(tx, command.CommandText);
         }
 
         return base.ScalarExecuted(command, eventData, result);
@@ -157,19 +254,19 @@ public class CachingCommandInterceptor : DbCommandInterceptor, Microsoft.EntityF
     // Invalidate only after transaction commits to avoid dirty reads and premature eviction on rollback
     public void TransactionCommitted(System.Data.Common.DbTransaction transaction, TransactionEndEventData eventData)
     {
-        if (_pendingTx.TryGetValue(transaction, out _))
+        if (_pendingTx.TryGetValue(transaction, out var tables))
         {
             _pendingTx.Remove(transaction);
-            InvalidateAll();
+            InvalidateTables(tables);
         }
     }
 
     public ValueTask TransactionCommittedAsync(System.Data.Common.DbTransaction transaction, TransactionEndEventData eventData, CancellationToken cancellationToken = default)
     {
-        if (_pendingTx.TryGetValue(transaction, out _))
+        if (_pendingTx.TryGetValue(transaction, out var tables))
         {
             _pendingTx.Remove(transaction);
-            InvalidateAll();
+            InvalidateTables(tables);
         }
         return default;
     }
@@ -181,12 +278,96 @@ public class CachingCommandInterceptor : DbCommandInterceptor, Microsoft.EntityF
         return default;
     }
 
-    private void AddOrEvict(string key, CachedQueryResult snapshot) => _store.Set(key, snapshot, _timeToLive);
+    private void AddOrEvict(string key, CachedQueryResult snapshot, string[] tables)
+    {
+        _store.Set(key, snapshot, _timeToLive);
+        _keyTables[key] = tables;
+        TrimKeyTables();
+    }
 
     private bool Cacheable(CommandEventData eventData, DbCommand command)
         => IsSelect(command.CommandText)
            && (!_skipInsideTransactions || eventData.Context?.Database.CurrentTransaction is null)
            && command.Transaction is null;
+
+    private static readonly System.Text.RegularExpressions.Regex ReadTablesRegex = new(
+        @"\b(?:FROM|JOIN)\s+(?:\""[^\""]+\""|[\w\.\[\]""]+)",
+        System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.Compiled,
+        TimeSpan.FromMilliseconds(100));
+    private static readonly System.Text.RegularExpressions.Regex WriteTablesRegex = new(
+        @"\b(?:UPDATE\s+(?:OR\s+(?:IGNORE|REPLACE|ABORT|FAIL|ROLLBACK)\s+)?|INSERT\s+INTO\s+|DELETE\s+FROM\s+)(?:\""[^\""]+\""|[\w\.\[\]""]+)",
+        System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.Compiled,
+        TimeSpan.FromMilliseconds(100));
+    private static readonly System.Text.RegularExpressions.Regex DepTagRegex = new(
+        @"dep\s*:\s*([A-Za-z0-9_\., ]+)",
+        System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.Compiled,
+        TimeSpan.FromMilliseconds(100));
+
+    /// <summary>
+    /// Tables a SELECT reads (06.4): parsed FROM/JOIN targets plus explicit
+    /// <c>TagWith("dep:Orders, Customers")</c> contracts for views/CTEs the regex cannot see.
+    /// Public for diagnostics and custom invalidation policies.
+    /// </summary>
+    public static string[] ParseReadTables(string sql)
+    {
+        var deps = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (System.Text.RegularExpressions.Match m in DepTagRegex.Matches(sql))
+            foreach (var part in m.Groups[1].Value.Split(','))
+            {
+                var t = part.Trim();
+                if (t.Length > 0) deps.Add(NormalizeTable(t));
+            }
+        var clean = StripComments(sql);
+        try
+        {
+            foreach (System.Text.RegularExpressions.Match m in ReadTablesRegex.Matches(clean))
+            {
+                var t = NormalizeTable(m.Value.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries)[^1]);
+                if (t.Length > 0) deps.Add(t);
+            }
+        }
+        catch (System.Text.RegularExpressions.RegexMatchTimeoutException) { }
+        return [.. deps];
+    }
+
+    /// <summary>Tables an INSERT/UPDATE/DELETE writes (06.4). Public for diagnostics.</summary>
+    public static string[] ParseWriteTables(string sql)
+    {
+        var tables = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var clean = StripComments(sql);
+        try
+        {
+            foreach (System.Text.RegularExpressions.Match m in WriteTablesRegex.Matches(clean))
+            {
+                var t = NormalizeTable(m.Value.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries)[^1]);
+                if (t.Length > 0) tables.Add(t);
+            }
+        }
+        catch (System.Text.RegularExpressions.RegexMatchTimeoutException) { }
+        return [.. tables];
+    }
+
+    private static string StripComments(string sql)
+    {
+        // Remove /* */ blocks then -- line comments (best-effort for table parsing).
+        var noBlocks = System.Text.RegularExpressions.Regex.Replace(sql, @"/\*.*?\*/", " ",
+            System.Text.RegularExpressions.RegexOptions.Singleline, TimeSpan.FromMilliseconds(100));
+        var sb = new System.Text.StringBuilder(noBlocks.Length);
+        foreach (var line in noBlocks.Split('\n'))
+        {
+            var idx = line.IndexOf("--", StringComparison.Ordinal);
+            sb.Append(idx < 0 ? line : line[..idx]).Append(' ');
+        }
+        return sb.ToString();
+    }
+
+    private static string NormalizeTable(string token)
+    {
+        var t = token.Trim().Trim('"', '[', ']', '`').Trim();
+        var dot = t.LastIndexOf('.');
+        if (dot >= 0) t = t[(dot + 1)..];
+        return t.Trim('"', '[', ']', '`');
+    }
 
     private static bool IsSelect(string sql)
     {
@@ -219,12 +400,25 @@ public class CachingCommandInterceptor : DbCommandInterceptor, Microsoft.EntityF
     private bool TryGet(string key, out CachedQueryResult result)
     {
         result = null!;
+        var start = Stopwatch.GetTimestamp();
         if (_store.TryGet(key, out var cached) && cached != null)
         {
             result = cached;
+            SharedMeter.CacheHits.Add(1);
+            SharedMeter.CacheServeDuration.Record(
+                TimeSpan.FromTicks(Stopwatch.GetElapsedTime(start).Ticks).TotalSeconds);
             return true;
         }
+        SharedMeter.CacheMisses.Add(1);
         return false;
+    }
+
+    private static void Bypass(string key, string reason)
+    {
+        // Served from a transient buffer without storing (06.2): result too large
+        // or multiple result sets. Observable via reason tag (low-cardinality).
+        SharedMeter.CacheEntriesRejected.Add(1,
+            new KeyValuePair<string, object?>("reason", reason));
     }
 
     internal static string BuildKey(DbCommand command)
@@ -271,36 +465,107 @@ public class CachingCommandInterceptor : DbCommandInterceptor, Microsoft.EntityF
         return sb.ToString();
     }
 
-    private static CachedQueryResult Buffer(DbDataReader source)
+    /// <returns>Buffered rows plus whether the entry may be stored.</returns>
+    private (CachedQueryResult Snapshot, bool Cacheable, string RejectReason) Buffer(DbDataReader source)
     {
         var names = Enumerable.Range(0, source.FieldCount).Select(source.GetName).ToArray();
         var types = Enumerable.Range(0, source.FieldCount).Select(source.GetFieldType).ToArray();
         var rows = new List<object[]>();
+        long bytes = 0;
         while (source.Read())
         {
             var row = new object[source.FieldCount];
             source.GetValues(row);
             Normalize(row);
             rows.Add(row);
+            bytes += EstimateRowBytes(row);
+            if (rows.Count > _maxRowsPerEntry || bytes > _maxBytesPerEntry)
+            {
+                // Keep buffering for serving, but never store: one wide SELECT
+                // must not OOM the process (06.2).
+                while (source.Read())
+                {
+                    var rest = new object[source.FieldCount];
+                    source.GetValues(rest);
+                    Normalize(rest);
+                    rows.Add(rest);
+                }
+                DrainExtraResults(source);
+                return (new CachedQueryResult(names, types, rows), false,
+                    rows.Count > _maxRowsPerEntry ? "rows" : "bytes");
+            }
         }
 
-        return new CachedQueryResult(names, types, rows);
+        if (DrainExtraResults(source))
+            return (new CachedQueryResult(names, types, rows), false, "multi-result");
+
+        return (new CachedQueryResult(names, types, rows), true, string.Empty);
     }
 
-    private static async Task<CachedQueryResult> BufferAsync(DbDataReader source, CancellationToken ct)
+    private async Task<(CachedQueryResult Snapshot, bool Cacheable, string RejectReason)> BufferAsync(DbDataReader source, CancellationToken ct)
     {
         var names = Enumerable.Range(0, source.FieldCount).Select(source.GetName).ToArray();
         var types = Enumerable.Range(0, source.FieldCount).Select(source.GetFieldType).ToArray();
         var rows = new List<object[]>();
-        while (await source.ReadAsync(ct))
+        long bytes = 0;
+        while (await source.ReadAsync(ct).ConfigureAwait(false))
         {
             var row = new object[source.FieldCount];
             source.GetValues(row);
             Normalize(row);
             rows.Add(row);
+            bytes += EstimateRowBytes(row);
+            if (rows.Count > _maxRowsPerEntry || bytes > _maxBytesPerEntry)
+            {
+                while (await source.ReadAsync(ct).ConfigureAwait(false))
+                {
+                    var rest = new object[source.FieldCount];
+                    source.GetValues(rest);
+                    Normalize(rest);
+                    rows.Add(rest);
+                }
+                await DrainExtraResultsAsync(source, ct).ConfigureAwait(false);
+                return (new CachedQueryResult(names, types, rows), false,
+                    rows.Count > _maxRowsPerEntry ? "rows" : "bytes");
+            }
         }
 
-        return new CachedQueryResult(names, types, rows);
+        if (await DrainExtraResultsAsync(source, ct).ConfigureAwait(false))
+            return (new CachedQueryResult(names, types, rows), false, "multi-result");
+
+        return (new CachedQueryResult(names, types, rows), true, string.Empty);
+    }
+
+    /// <summary>
+    /// CachedDataReader serves a single result set (NextResult() == false), so a command
+    /// yielding more sets must never be stored — the extra sets would be silently lost (06.6).
+    /// </summary>
+    private static bool DrainExtraResults(DbDataReader source)
+    {
+        try { return source.NextResult(); }
+        catch { return true; }
+    }
+
+    private static async Task<bool> DrainExtraResultsAsync(DbDataReader source, CancellationToken ct)
+    {
+        try { return await source.NextResultAsync(ct).ConfigureAwait(false); }
+        catch { return true; }
+    }
+
+    private static long EstimateRowBytes(object[] row)
+    {
+        long bytes = 0;
+        foreach (var v in row)
+        {
+            bytes += v switch
+            {
+                null or DBNull => 8,
+                string s => 16 + (long)s.Length * 2,
+                byte[] b => 16 + b.Length,
+                _ => 24,
+            };
+        }
+        return bytes;
     }
 
     private static void Normalize(object[] row)
@@ -393,7 +658,15 @@ public sealed class CachedDataReader : DbDataReader
     public override bool IsDBNull(int ordinal) => Current[ordinal] is DBNull;
     public override Type GetFieldType(int ordinal) => _result.FieldTypes[ordinal];
 
-    public override T GetFieldValue<T>(int ordinal) => (T)ConvertValue(GetValue(ordinal), typeof(T))!;
+    public override T GetFieldValue<T>(int ordinal)
+    {
+        var value = GetValue(ordinal);
+        // Defensive copy (06.6): the buffered byte[] is shared across all readers of
+        // this entry — a mutating consumer must not poison the cache for everyone else.
+        if (value is byte[] bytes && typeof(T).IsAssignableFrom(typeof(byte[])))
+            return (T)(object)bytes.ToArray();
+        return (T)ConvertValue(value, typeof(T))!;
+    }
     public override bool GetBoolean(int ordinal) => (bool)ConvertValue(GetValue(ordinal), typeof(bool))!;
     public override byte GetByte(int ordinal) => (byte)ConvertValue(GetValue(ordinal), typeof(byte))!;
     public override char GetChar(int ordinal) => (char)ConvertValue(GetValue(ordinal), typeof(char))!;
@@ -457,11 +730,22 @@ public sealed class CachedDataReader : DbDataReader
     public override TextReader GetTextReader(int ordinal) => new StringReader(IsDBNull(ordinal) ? string.Empty : GetString(ordinal));
 
     private static object? ConvertValue(object? value, Type targetType)
-        => value switch
+    {
+        if (value is null or DBNull) return null;
+        var nonNullable = Nullable.GetUnderlyingType(targetType) ?? targetType;
+        if (nonNullable.IsInstanceOfType(value)) return value;
+        // Convert.ChangeType cannot parse string -> DateTimeOffset/Guid/TimeSpan/enum
+        // (SQLite materializes those as TEXT). Route strings through TypeConverter (06.6).
+        if (value is string s && nonNullable != typeof(string))
         {
-            null or DBNull => null,
-            { } when targetType.IsInstanceOfType(value) => value,
-            _ => Convert.ChangeType(value, Nullable.GetUnderlyingType(targetType) ?? targetType,
-                    System.Globalization.CultureInfo.InvariantCulture)
-        };
+            var converter = System.ComponentModel.TypeDescriptor.GetConverter(nonNullable);
+            if (converter.CanConvertFrom(typeof(string)))
+            {
+                try { return converter.ConvertFromInvariantString(s); }
+                catch (Exception) { /* fall through to ChangeType for a second opinion */ }
+            }
+        }
+        return Convert.ChangeType(value, nonNullable,
+            System.Globalization.CultureInfo.InvariantCulture);
+    }
 }

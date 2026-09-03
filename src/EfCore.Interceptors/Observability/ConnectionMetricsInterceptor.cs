@@ -13,7 +13,7 @@ public class ConnectionMetricsInterceptor : DbConnectionInterceptor
     private static readonly Counter<long> StaticOpened = SharedMeter.Meter.CreateCounter<long>("ef.connection.opened");
     private static readonly Counter<long> StaticClosed = SharedMeter.Meter.CreateCounter<long>("ef.connection.closed");
     private static readonly Counter<long> StaticFailed = SharedMeter.Meter.CreateCounter<long>("ef.connection.failed");
-    private static readonly Histogram<double> StaticDuration = SharedMeter.Meter.CreateHistogram<double>("ef.connection.open_duration", unit: "ms");
+    private static readonly Histogram<double> StaticDuration = SharedMeter.DurationHistogram(SharedMeter.Meter, "ef.connection.open_duration", "ms");
 
     private readonly Counter<long> _opened = StaticOpened;
     private readonly Counter<long> _closed = StaticClosed;

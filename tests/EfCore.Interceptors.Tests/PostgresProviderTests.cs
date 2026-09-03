@@ -1,5 +1,6 @@
 using EfCore.Interceptors.Abstractions;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using Xunit;
 
 namespace EfCore.Interceptors.Tests;
@@ -18,7 +19,9 @@ public class PostgresProviderTests
     public async Task Postgres_Auditing_Works()
     {
         if (!CanConnect()) return; // skip if PG not available (Testcontainers-style)
-        var opts = new DbContextOptionsBuilder<ProviderTestDb>().UseNpgsql(PgCs).UseEfInterceptors(s => s.WithAuditing(new StaticCurrentUserProvider("pg"))).Options;
+        var opts = new DbContextOptionsBuilder<ProviderTestDb>().UseNpgsql(PgCs)
+            .ConfigureWarnings(w => w.Ignore(CoreEventId.ManyServiceProvidersCreatedWarning))
+            .UseEfInterceptors(s => s.WithAuditing(new StaticCurrentUserProvider("pg"))).Options;
         await using var db = new ProviderTestDb(opts);
         await db.Database.EnsureDeletedAsync(); await db.Database.EnsureCreatedAsync();
         var e = new ProviderEntity { Name = "pg" }; db.Add(e); await db.SaveChangesAsync();

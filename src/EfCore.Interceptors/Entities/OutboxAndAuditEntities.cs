@@ -51,6 +51,19 @@ public class OutboxMessage
     /// <summary>Claim lock for multi-instance delivery (null = not locked).</summary>
     public DateTimeOffset? LockedUntilUtc { get; set; }
 
+    /// <summary>
+    /// Unique claim token of the worker that owns the current lock.
+    /// Replaces timestamp-equality claim (05.1): two instances computing the same
+    /// <c>LockedUntilUtc</c> no longer select each other's batch.
+    /// </summary>
+    public Guid? ClaimToken { get; set; }
+
+    /// <summary>
+    /// When set, the message exceeded max delivery attempts and is parked in the
+    /// dead-letter queue. Excluded from polling (05.2).
+    /// </summary>
+    public DateTimeOffset? DeadLetteredAtUtc { get; set; }
+
     /// <summary>Delivery attempt count.</summary>
     public int AttemptCount { get; set; }
 

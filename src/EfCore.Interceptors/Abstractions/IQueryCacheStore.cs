@@ -16,11 +16,12 @@ public interface IQueryCacheStore
 }
 
 /// <summary>In-memory store with TTL and SizeLimit (default for single instance).</summary>
-public sealed class MemoryQueryCacheStore(TimeSpan? defaultTtl = null, int sizeLimit = 1000) : IQueryCacheStore
+public sealed class MemoryQueryCacheStore(TimeSpan? defaultTtl = null, int sizeLimit = 1000, TimeProvider? clock = null) : IQueryCacheStore
 {
     private readonly System.Collections.Concurrent.ConcurrentDictionary<string, (CachedQueryResult Result, DateTimeOffset Expires)> _map = new();
     private readonly TimeSpan _defaultTtl = defaultTtl ?? TimeSpan.FromSeconds(30);
     private readonly int _sizeLimit = Math.Max(1, sizeLimit);
+    private readonly TimeProvider _clock = clock ?? TimeProvider.System;
     private readonly object _evictLock = new();
 
     public int Count => _map.Count;
@@ -28,7 +29,7 @@ public sealed class MemoryQueryCacheStore(TimeSpan? defaultTtl = null, int sizeL
     {
         value = null;
         if (!_map.TryGetValue(key, out var entry)) return false;
-        if (entry.Expires > DateTimeOffset.UtcNow) { value = entry.Result; return true; }
+        if (entry.Expires > _clock.GetUtcNow()) { value = entry.Result; return true; }
         _map.TryRemove(key, out _);
         return false;
     }
@@ -40,7 +41,8 @@ public sealed class MemoryQueryCacheStore(TimeSpan? defaultTtl = null, int sizeL
             {
                 if (_map.Count >= _sizeLimit)
                 {
-                    foreach (var kv in _map) if (kv.Value.Expires <= DateTimeOffset.UtcNow) _map.TryRemove(kv.Key, out _);
+                    var now = _clock.GetUtcNow();
+                    foreach (var kv in _map) if (kv.Value.Expires <= now) _map.TryRemove(kv.Key, out _);
                     if (_map.Count >= _sizeLimit)
                     {
                         // LRU-ish: evict earliest expiry (best-effort without full LRU)
@@ -50,7 +52,7 @@ public sealed class MemoryQueryCacheStore(TimeSpan? defaultTtl = null, int sizeL
                 }
             }
         }
-        _map[key] = (value, DateTimeOffset.UtcNow.Add(ttl == default ? _defaultTtl : ttl));
+        _map[key] = (value, _clock.GetUtcNow().Add(ttl == default ? _defaultTtl : ttl));
     }
     public void Invalidate(string tag)
     {

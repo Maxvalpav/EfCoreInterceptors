@@ -1,3 +1,5 @@
+using System.Buffers;
+using System.Text;
 using System.Text.Json;
 using EfCore.Interceptors.Abstractions;
 using EfCore.Interceptors.Entities;
@@ -23,6 +25,27 @@ public class ChangeLogSaveChangesInterceptor(
         WriteIndented = false,
         DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.Never
     };
+
+    // Pooled JSON buffer per thread (08.3): diff serialization happens per Modified entity
+    // inside the transaction — renting avoids gen0 churn. Cleared on every use.
+    [ThreadStatic]
+    private static ArrayBufferWriter<byte>? _jsonBuffer;
+
+    private static string SerializeJson<T>(T value)
+    {
+        var buffer = _jsonBuffer ??= new ArrayBufferWriter<byte>();
+        try
+        {
+            using var writer = new Utf8JsonWriter(buffer);
+            JsonSerializer.Serialize(writer, value, JsonOptions);
+            writer.Flush();
+            return Encoding.UTF8.GetString(buffer.WrittenSpan);
+        }
+        finally
+        {
+            buffer.Clear();
+        }
+    }
 
     private readonly TimeProvider _clock = clock ?? TimeProvider.System;
     private readonly ICurrentUserProvider _users = currentUserProvider ?? StaticCurrentUserProvider.System;
@@ -61,7 +84,7 @@ public class ChangeLogSaveChangesInterceptor(
             // Fail fast before building diffs
             var hasAny = context.ChangeTracker.Entries()
                 .Any(e => e.State is EntityState.Added or EntityState.Modified or EntityState.Deleted
-                    && e.Entity is not ChangeLogEntry and not OutboxMessage);
+                    && e.Entity is not ChangeLogEntry and not OutboxMessage and not TemporalRecord);
             if (hasAny)
             {
                 throw new InvalidOperationException(
@@ -79,7 +102,7 @@ public class ChangeLogSaveChangesInterceptor(
         foreach (var entry in context.ChangeTracker.Entries())
         {
             if (entry.State is not (EntityState.Added or EntityState.Modified or EntityState.Deleted) ||
-                entry.Entity is ChangeLogEntry or OutboxMessage)
+                entry.Entity is ChangeLogEntry or OutboxMessage or TemporalRecord)
             {
                 continue;
             }
@@ -96,7 +119,7 @@ public class ChangeLogSaveChangesInterceptor(
                 EntityName = entry.Metadata.ClrType.Name,
                 EntityKey = SerializeKey(entry),
                 Action = entry.State.ToString(),
-                ChangesJson = JsonSerializer.Serialize(changes, JsonOptions),
+                ChangesJson = SerializeJson(changes),
                 Actor = actor,
                 TimestampUtc = now
             };
@@ -279,9 +302,8 @@ public class ChangeLogSaveChangesInterceptor(
     {
         var pk = entry.Metadata.FindPrimaryKey();
         if (pk is null) return "{}";
-        return JsonSerializer.Serialize(
+        return SerializeJson(
             pk.Properties
-                .ToDictionary(p => p.Name, p => entry.Property(p.Name).CurrentValue),
-            JsonOptions);
+                .ToDictionary(p => p.Name, p => entry.Property(p.Name).CurrentValue));
     }
 }

@@ -1,0 +1,13 @@
+version: 2
+updates:
+  - package-ecosystem: "nuget"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    groups:
+      microsoft-extensions:
+        patterns:
+          - "Microsoft.*"
+      entity-framework:
+        patterns:
+          - "Microsoft.EntityFrameworkCore*"

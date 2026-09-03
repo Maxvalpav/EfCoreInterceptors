@@ -3,6 +3,7 @@ using EfCore.Interceptors.Abstractions;
 using EfCore.Interceptors.Entities;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.Logging;
 
 namespace EfCore.Interceptors.Tests.Infrastructure;
@@ -34,6 +35,12 @@ public class TestDbContext(DbContextOptions<TestDbContext> options) : DbContext(
     public DbSet<LedgerEntry> LedgerEntries => Set<LedgerEntry>();
     public DbSet<AuditRecord> AuditRecords => Set<AuditRecord>();
     public DbSet<VaultItem> VaultItems => Set<VaultItem>();
+    public DbSet<SubjectRecord> SubjectRecords => Set<SubjectRecord>();
+    public DbSet<EmployeeRecord> EmployeeRecords => Set<EmployeeRecord>();
+    public DbSet<ContractDoc> ContractDocs => Set<ContractDoc>();
+    public DbSet<TemporalDoc> TemporalDocs => Set<TemporalDoc>();
+    public DbSet<TemporalRecord> TemporalRecords => Set<TemporalRecord>();
+    public DbSet<SagaInstance> SagaInstances => Set<SagaInstance>();
     public DbSet<Report> Reports => Set<Report>();
     public DbSet<VersionedDoc> VersionedDocs => Set<VersionedDoc>();
 
@@ -71,6 +78,44 @@ public class VaultItem
 
     [Encrypted]
     public string? CardNumber { get; set; }
+}
+
+public class SubjectRecord
+{
+    public int Id { get; set; }
+
+    [SubjectIdentifier]
+    public string SubjectId { get; set; } = string.Empty;
+
+    [DataClassification(Sensitivity.Pii)]
+    public string Email { get; set; } = string.Empty;
+
+    public string Notes { get; set; } = string.Empty;
+}
+
+public class EmployeeRecord
+{
+    public int Id { get; set; }
+    public string Name { get; set; } = string.Empty;
+
+    [RequiresRole("HR")]
+    public decimal Salary { get; set; }
+}
+
+public class ContractDoc
+{
+    public int Id { get; set; }
+    public string? OldName { get; set; }
+
+    [MigratedFrom("OldName")]
+    public string? NewName { get; set; }
+}
+
+[Temporal]
+public class TemporalDoc
+{
+    public int Id { get; set; }
+    public string Title { get; set; } = string.Empty;
 }
 
 public class Report : IInitializable
@@ -120,7 +165,10 @@ public sealed class SqliteTestDatabase : IDisposable
     public DbContextOptionsBuilder<TestDbContext> BuildOptions(Action<DbContextOptionsBuilder>? configure = null)
     {
         var builder = new DbContextOptionsBuilder<TestDbContext>()
-            .UseSqlite(_connection);
+            .UseSqlite(_connection)
+            // The suite builds dozens of distinct option sets (one per interceptor combo);
+            // EF's many-providers tripwire is noise here, not a leak (contexts are disposed).
+            .ConfigureWarnings(w => w.Ignore(CoreEventId.ManyServiceProvidersCreatedWarning));
         configure?.Invoke(builder);
         return builder;
     }
@@ -131,7 +179,8 @@ public sealed class SqliteTestDatabase : IDisposable
         where TContext : DbContext
     {
         var builder = new DbContextOptionsBuilder<TContext>()
-            .UseSqlite(_connection);
+            .UseSqlite(_connection)
+            .ConfigureWarnings(w => w.Ignore(CoreEventId.ManyServiceProvidersCreatedWarning));
         configure?.Invoke(builder);
         return builder;
     }

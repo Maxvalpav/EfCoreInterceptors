@@ -23,7 +23,13 @@ jobs:
         run: dotnet build EfCoreInterceptors.slnx --no-restore -c Release
 
       - name: Test
-        run: dotnet test EfCoreInterceptors.slnx --no-build -c Release
+        run: dotnet test EfCoreInterceptors.slnx --no-build -c Release --collect:"XPlat Code Coverage" --results-directory coverage
+
+      - name: Upload coverage artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage
+          path: coverage/
 
       - name: Pack
         run: dotnet pack src/EfCore.Interceptors/EfCore.Interceptors.csproj --no-build -c Release -o artifacts
