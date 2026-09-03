@@ -97,7 +97,7 @@ public class PropertyDecryptionMaterializationInterceptor(
         }
     }
 
-        private byte[]? BuildAad(IReadOnlyEntityType entityType, object instance, string propertyName)
+    private byte[]? BuildAad(IReadOnlyEntityType entityType, object instance, string propertyName)
     {
         try
         {

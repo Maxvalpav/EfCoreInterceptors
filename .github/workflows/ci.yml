@@ -6,15 +6,34 @@ on:
   pull_request:
 
 jobs:
-  build-test:
+  format:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
       - name: Setup .NET 10
         uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '10.0.x'
+      - name: Verify formatting (.editorconfig, whitespace)
+        run: dotnet format whitespace EfCoreInterceptors.slnx --verify-no-changes --verbosity minimal
+
+  build-test:
+    needs: format
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        tfm: [net8.0, net10.0]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET (8 + 10, runtimes for both TFMs)
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: |
+            8.0.x
+            10.0.x
 
       - name: Restore
         run: dotnet restore EfCoreInterceptors.slnx
@@ -22,18 +41,89 @@ jobs:
       - name: Build (Release)
         run: dotnet build EfCoreInterceptors.slnx --no-restore -c Release
 
-      - name: Test
-        run: dotnet test EfCoreInterceptors.slnx --no-build -c Release --collect:"XPlat Code Coverage" --results-directory coverage
+      - name: Test (${{ matrix.tfm }}, unit only)
+        run: dotnet test tests/EfCore.Interceptors.Tests/EfCore.Interceptors.Tests.csproj --no-build -c Release -f ${{ matrix.tfm }} --filter 'Category!=Integration' --collect:"XPlat Code Coverage" --results-directory coverage/${{ matrix.os }}-${{ matrix.tfm }}
 
       - name: Upload coverage artifact
         uses: actions/upload-artifact@v4
         with:
-          name: coverage
+          name: coverage-${{ matrix.os }}-${{ matrix.tfm }}
           path: coverage/
 
-      - name: Pack
-        run: dotnet pack src/EfCore.Interceptors/EfCore.Interceptors.csproj --no-build -c Release -o artifacts
+  integration:
+    # Provider integration tests (C-2): real PostgreSQL via Testcontainers (Docker is
+    # available on ubuntu runners). Tests skip gracefully without a database.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
 
+      - name: Setup .NET (8 + 10, runtimes for both TFMs)
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: |
+            8.0.x
+            10.0.x
+
+      - name: Restore
+        run: dotnet restore EfCoreInterceptors.slnx
+
+      - name: Build (Release)
+        run: dotnet build EfCoreInterceptors.slnx --no-restore -c Release
+
+      - name: Test (integration, net10.0, PostgreSQL via Testcontainers)
+        run: dotnet test tests/EfCore.Interceptors.Tests/EfCore.Interceptors.Tests.csproj --no-build -c Release -f net10.0 --filter 'Category=Integration'
+
+  coverage:
+    needs: build-test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download coverage artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: coverage-*
+          path: coverage/
+          merge-multiple: true
+      - name: Upload to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          directory: coverage/
+          fail_ci_if_error: false
+          verbose: true
+        env:
+          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+
+  api-check:
+    needs: format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup .NET 10
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - name: Build (Release, for PublicApiAnalyzers)
+        run: dotnet build src/EfCore.Interceptors/EfCore.Interceptors.csproj -c Release
+      - name: Ensure no unshipped API leaks into release build
+        run: |
+          if [ -s src/EfCore.Interceptors/PublicAPI.Unshipped.txt ]; then
+            echo "::warning::PublicAPI.Unshipped.txt is not empty. Move entries to Shipped on release (see 04-ci-testing-release C-7)."
+            cat src/EfCore.Interceptors/PublicAPI.Unshipped.txt
+          fi
+
+  pack:
+    needs: [build-test, api-check]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup .NET 10
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - name: Pack all packable projects
+        run: dotnet pack EfCoreInterceptors.slnx --no-build -c Release -o artifacts
+      - name: List packages
+        run: ls -lah artifacts/
       - name: Upload package artifact
         uses: actions/upload-artifact@v4
         with:

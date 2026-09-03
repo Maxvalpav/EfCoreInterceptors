@@ -165,8 +165,11 @@ public class AuditP4SagaTests
         {
             seed.SagaInstances.Add(new SagaInstance
             {
-                Id = "saga-3", SagaType = "order", StepIndex = 1,
-                State = SagaState.InProgress, UpdatedAtUtc = DateTimeOffset.UtcNow
+                Id = "saga-3",
+                SagaType = "order",
+                StepIndex = 1,
+                State = SagaState.InProgress,
+                UpdatedAtUtc = DateTimeOffset.UtcNow
             });
             seed.SaveChanges();
         }
@@ -194,18 +197,27 @@ public class AuditP4DashboardTests
                 new OutboxMessage { Type = "t", PayloadJson = "{}", OccurredAtUtc = now.AddMinutes(-5) },
                 new OutboxMessage
                 {
-                    Type = "t", PayloadJson = "{}", OccurredAtUtc = now.AddMinutes(-5),
-                    DeadLetteredAtUtc = now, AttemptCount = 10, Error = "boom"
+                    Type = "t",
+                    PayloadJson = "{}",
+                    OccurredAtUtc = now.AddMinutes(-5),
+                    DeadLetteredAtUtc = now,
+                    AttemptCount = 10,
+                    Error = "boom"
                 },
                 new OutboxMessage
                 {
-                    Type = "t", PayloadJson = "{}", OccurredAtUtc = now.AddDays(-40),
+                    Type = "t",
+                    PayloadJson = "{}",
+                    OccurredAtUtc = now.AddDays(-40),
                     ProcessedAtUtc = now.AddDays(-40)
                 });
             seed.ChangeLogEntries.Add(new ChangeLogEntry
             {
-                EntityName = "E", EntityKey = "1", Action = "Added",
-                ChangesJson = "[]", TimestampUtc = now
+                EntityName = "E",
+                EntityKey = "1",
+                Action = "Added",
+                ChangesJson = "[]",
+                TimestampUtc = now
             });
             seed.SaveChanges();
         }
@@ -234,7 +246,7 @@ public class AuditP4DashboardTests
         using (var seed = sqlite.CreateContext())
         {
             seed.OutboxMessages.Add(new OutboxMessage
-                { Type = "t", PayloadJson = "{}", OccurredAtUtc = DateTimeOffset.UtcNow });
+            { Type = "t", PayloadJson = "{}", OccurredAtUtc = DateTimeOffset.UtcNow });
             seed.SaveChanges();
         }
 

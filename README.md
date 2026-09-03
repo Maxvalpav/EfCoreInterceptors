@@ -1,14 +1,16 @@
 # EfCore.Interceptors
 
+> Полная документация на русском: [README.ru.md](README.ru.md).
+
 [![NuGet](https://img.shields.io/nuget/v/EfCore.Interceptors?label=NuGet&logo=nuget&color=004880)](https://www.nuget.org/packages/EfCore.Interceptors)
 [![NuGet Downloads](https://img.shields.io/nuget/dt/EfCore.Interceptors?label=downloads)](https://www.nuget.org/packages/EfCore.Interceptors)
 [![License: MIT](https://img.shields.io/github/license/Maxvalpav/EfCoreInterceptors?color=green)](LICENSE)
+[![CI](https://github.com/Maxvalpav/EfCoreInterceptors/actions/workflows/ci.yml/badge.svg)](https://github.com/Maxvalpav/EfCoreInterceptors/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/gh/Maxvalpav/EfCoreInterceptors/branch/master/graph/badge.svg)](https://codecov.io/gh/Maxvalpav/EfCoreInterceptors)
 
-## English (short)
-
-Production-ready interceptor suite for **Entity Framework Core 10** (.NET 10).
-Covers all 7 EF Core interceptor types with common scenarios: auditing, soft delete, domain events & outbox,
-SQL logging, slow query detection, second-level cache, N+1 detection, query hints, read-only guard,
+Production-ready interceptor suite for **Entity Framework Core** (targets `net8.0` and `net10.0`).
+Covers all 7 EF Core interceptor types with everyday scenarios: auditing, soft delete, domain events & outbox,
+SQL logging, slow-query detection, second-level cache, N+1 detection, query hints, read-only guard,
 session init, connection/transaction lifecycle, query tree, materialization stamping and identity resolution.
 
 ```bash
@@ -26,24 +28,9 @@ optionsBuilder.UseSqlServer(connectionString).UseEfInterceptors(s => s
     .WithSqlLogging());
 ```
 
-> Full documentation below is in Russian. See code samples and API list — names are in English.
-
 ---
 
-## Русский
-
-Библиотека production-ready перехватчиков (interceptors) для **Entity Framework Core 10** (.NET 10).
-Покрывает все 7 типов интерсепторов EF Core типовыми сценариями: аудит, soft delete, доменные события,
-логирование SQL, детект медленных запросов, query hints, read-only guard, session-init, транзакции,
-дерево запросов, штамп материализации и разрешение коллизий идентичности.
-
-```bash
-dotnet add package EfCore.Interceptors   # либо ссылка на проект src/EfCore.Interceptors
-```
-
----
-
-## Быстрый старт
+## Quick start
 
 ```csharp
 using EfCore.Interceptors;
@@ -51,15 +38,15 @@ using EfCore.Interceptors;
 optionsBuilder
     .UseSqlServer(connectionString)
     .UseEfInterceptors(s => s
-        .WithAuditing(users)                                  // Created*/Updated* колонки
+        .WithAuditing(users)                                  // Created*/Updated* columns
         .WithSoftDeletes(users)                               // DELETE -> UPDATE IsDeleted=1
-        .WithDomainEvents(dispatcher)                         // публикация событий после коммита
-        .WithSlowQueryWarning(TimeSpan.FromSeconds(2))        // WARN на медленные запросы
-        .WithSqlLogging()                                     // лог всех SQL-команд
+        .WithDomainEvents(dispatcher)                         // publish events after commit
+        .WithSlowQueryWarning(TimeSpan.FromSeconds(2))        // WARN on slow queries
+        .WithSqlLogging()                                     // log every SQL command
     );
 ```
 
-Регистрация через DI:
+Registration via DI:
 
 ```csharp
 services.AddEfInterceptors(s => s.WithAuditing().WithSoftDeletes());
@@ -67,8 +54,8 @@ services.AddDbContext<AppDbContext>((sp, options) =>
     options.UseSqlServer(cs).UseEfInterceptorsFrom(sp));
 ```
 
-> Если интерсептору нужны **scoped-зависимости** (например, текущий пользователь из `IHttpContextAccessor`),
-> зарегистрируйте сам интерсептор как Scoped и резолвьте вручную:
+> If an interceptor needs **scoped dependencies** (e.g. the current user from `IHttpContextAccessor`),
+> register the interceptor itself as Scoped and resolve it manually:
 
 ```csharp
 services.AddScoped<AuditSaveChangesInterceptor>();
@@ -78,109 +65,111 @@ services.AddDbContext<AppDbContext>((sp, options) =>
 
 ---
 
-## Состав библиотеки
+## Library contents
 
 ### 1. ISaveChangesInterceptor
 
-| Интерсептор | Что делает |
+| Interceptor | What it does |
 |---|---|
-| `AuditSaveChangesInterceptor` | Заполняет `CreatedAtUtc/CreatedBy/UpdatedAtUtc/UpdatedBy` у сущностей `IAuditableEntity`. При обновлении защищает Created* от подмены (`IsModified = false`). Поддерживает `TimeProvider` для тестов. |
-| `SoftDeleteSaveChangesInterceptor` | Превращает `Remove()` в логическое удаление у сущностей `ISoftDeletableEntity`: `State = Modified`, проставляет `IsDeleted/DeletedAtUtc/DeletedBy`. Строка остаётся в БД. Для скрытия из выборок добавьте глобальный фильтр `HasQueryFilter(e => !e.IsDeleted)` — интерсептор отвечает только за запись. |
-| `DomainEventsSaveChangesInterceptor` | Outbox-диспетчеризация доменных событий: перед сохранением снимает snapshot событий агрегатов `IHasDomainEvents`, после успешного коммита публикует их через `IDomainEventDispatcher` и очищает. При неудачном сохранении события остаются на агрегатах для повторной попытки. |
-| `ChangeLogSaveChangesInterceptor` | **Аудит-трейл в БД**: пишет в таблицу `ChangeLogEntry` имя сущности, сериализованный PK, действие (Added/Modified/Deleted), JSON-дифф изменённых свойств (old/new) и актёра — в той же транзакции, что и бизнес-изменение. Требует замапить `ChangeLogEntry`. |
-| `OutboxSaveChangesInterceptor` | **Атомарный outbox**: сериализует доменные события агрегатов в строки `OutboxMessage`, вставляемые в той же транзакции; фоновый воркер доставляет и штампует `ProcessedAtUtc`. При сбое сохранения события возвращаются на агрегаты. Требует замапить `OutboxMessage`. |
-| `MultiTenancySaveChangesInterceptor` | **Мультитенантность**: проставляет `TenantId` у `ITenantEntity` на вставке из `ITenantProvider`; модификацию чужого тенанта пресекает `CrossTenantAccessException`. Для изоляции чтений добавьте фильтр по тенанту. |
-| `MassOperationGuardSaveChangesInterceptor` | Предохранитель от массовых операций: если один SaveChanges трогает больше N Added/Modified/Deleted — бросает `MassOperationException` со статистикой. |
-| `ConcurrencyExceptionTranslatorInterceptor` | Переводит низкоуровневый `DbUpdateConcurrencyException` в доменный `ConcurrencyConflictException`, чтобы верхние слои не зависели от EF. |
-| `DeleteGuardSaveChangesInterceptor` | Абсолютный запрет удаления `IProtectedEntity` (финансовые/юридические записи) — `ProtectedEntityException` до похода в БД. |
-| `ImmutableEntityGuardSaveChangesInterceptor` | Append-only сущности `IImmutableEntity`: вставки разрешены, изменение и удаление — `ImmutableEntityException`. |
-| `PropertyEncryptionSaveChangesInterceptor` + `PropertyDecryptionMaterializationInterceptor` | Прозрачное шифрование свойств `[Encrypted]`: AES-GCM шифротекст в БД, расшифровка при материализации. Реализуйте `IPropertyValueEncryptor` (готовый `AesGcmPropertyValueEncryptor`). |
-| `ValidationSaveChangesInterceptor` | Агрегированная DataAnnotations-валидация перед сохранением: все нарушения всех сущностей в одном `EntityValidationException`, а не первое падение на БД. |
-| `VersionIncrementSaveChangesInterceptor` | Ведёт счётчик `IVersionedEntity.Version` (+1 при каждом update) для optimistic concurrency на провайдерах без rowversion; объявите свойство concurrency-token — и устаревшие записи будут отклоняться. |
-| `ConcurrencyRetrySaveChangesInterceptor` | Классический «retry вокруг SaveChanges» как интерсептор: при конфликте токена записи приводятся по политике **ClientWins** (last-write-wins) или **StoreWins** (перезагрузка), сохранение повторяется до N раз с экспоненциальной задержкой, вызывающий код видит успех. После исчерпания — исходный `DbUpdateConcurrencyException`. |
-| `CustomValidationSaveChangesInterceptor` | Адаптер внешних валидаторов без зависимости от них: реализуйте `IEntityValidator` (FluentValidation и т.п.) — агрегированные ошибки в одном `EntityValidationException`. |
+| `AuditSaveChangesInterceptor` | Fills `CreatedAtUtc/CreatedBy/UpdatedAtUtc/UpdatedBy` on `IAuditableEntity`. Protects Created* from tampering on update (`IsModified = false`). Supports `TimeProvider` for tests. |
+| `SoftDeleteSaveChangesInterceptor` | Turns `Remove()` into logical delete on `ISoftDeletableEntity`: `State = Modified`, sets `IsDeleted/DeletedAtUtc/DeletedBy`. The row stays in the DB. Add a global filter `HasQueryFilter(e => !e.IsDeleted)` to hide it from queries — the interceptor only owns the write side. |
+| `DomainEventsSaveChangesInterceptor` | Outbox-style dispatch of domain events: snapshots `IHasDomainEvents` aggregates before save, publishes them via `IDomainEventDispatcher` after a successful commit, then clears. On save failure the events stay on the aggregates for retry. |
+| `ChangeLogSaveChangesInterceptor` | **Audit trail in the DB**: writes entity name, serialized PK, action (Added/Modified/Deleted), JSON diff of changed properties (old/new) and the actor into `ChangeLogEntry` — in the same transaction as the business change. Requires mapping `ChangeLogEntry`. `[Encrypted]` values are stored as `[encrypted]` markers, never plaintext; `[ExcludeFromChangeLog]` skips a property entirely. |
+| `OutboxSaveChangesInterceptor` | **Transactional outbox**: serializes aggregate domain events into `OutboxMessage` rows inserted in the same transaction; a background worker delivers them and stamps `ProcessedAtUtc`. On save failure the events return to the aggregates. Requires mapping `OutboxMessage`. |
+| `MultiTenancySaveChangesInterceptor` | **Multi-tenancy**: stamps `TenantId` on `ITenantEntity` inserts from `ITenantProvider`; cross-tenant modification raises `CrossTenantAccessException`. Add a tenant query filter for the read side. `WithMultiTenancy()` also forbids `IgnoreQueryFilters()` via an auto-installed strict policy (opt out with `strictQueryPolicy: false`); raw SQL can be locked behind `TagWith("tenant-safe")` with `WithStrictQueryPolicy(forbidUntaggedRawSql: true)`. Threat model: [THREAT-MODEL.md](THREAT-MODEL.md). |
+| `MassOperationGuardSaveChangesInterceptor` | Guard against mass operations: if one SaveChanges touches more than N Added/Modified/Deleted entities, throws `MassOperationException` with statistics. |
+| `ConcurrencyExceptionTranslatorInterceptor` | Translates low-level `DbUpdateConcurrencyException` into domain `ConcurrencyConflictException` so upper layers don't depend on EF. |
+| `DeleteGuardSaveChangesInterceptor` | Absolute delete ban for `IProtectedEntity` (financial/legal records) — `ProtectedEntityException` before hitting the DB. |
+| `ImmutableEntityGuardSaveChangesInterceptor` | Append-only `IImmutableEntity`: inserts allowed, update/delete raise `ImmutableEntityException`. |
+| `PropertyEncryptionSaveChangesInterceptor` + `PropertyDecryptionMaterializationInterceptor` | Transparent `[Encrypted]` property encryption: AES-GCM ciphertext in the DB, decrypted on materialization. Implement `IPropertyValueEncryptor` (ready-made `AesGcmPropertyValueEncryptor`, key-ring `KeyRingPropertyValueEncryptor` with payload v2 `0x02|kid|nonce|tag|cipher`). |
+| `ValidationSaveChangesInterceptor` | Aggregated DataAnnotations validation before save: every violation of every entity in one `EntityValidationException`, instead of failing on the first DB error. |
+| `VersionIncrementSaveChangesInterceptor` | Maintains `IVersionedEntity.Version` (+1 per update) for optimistic concurrency on providers without rowversion; declare the property as a concurrency token and stale writes get rejected. |
+| `ConcurrencyRetrySaveChangesInterceptor` | Classic "retry around SaveChanges" as an interceptor: on token conflict applies **ClientWins** (last-write-wins) or **StoreWins** (reload) policy, retries up to N times with exponential backoff; the caller sees success. After exhaustion the original `DbUpdateConcurrencyException` propagates. |
+| `CustomValidationSaveChangesInterceptor` | Adapter for external validators without taking a dependency: implement `IEntityValidator` (FluentValidation etc.) — aggregated errors in one `EntityValidationException`. |
 
 ### 2. IDbCommandInterceptor
 
-| Интерсептор | Что делает |
+| Interceptor | What it does |
 |---|---|
-| `SqlLoggingCommandInterceptor` | Логирует каждую SQL-команду: старт (Debug), завершение с длительностью (Information), отмена (Information), ошибка (Error). Опция `includeParameterValues` включает/скрывает значения параметров; `textRedactor` маскирует PII/карты во всём, что попадает в лог. |
-| `SlowQueryCommandInterceptor` | Предупреждение (Warning), когда длительность команды превысила порог. Использует `CommandExecutedEventData.Duration` — без ручных секундомеров. Есть фильтр «какие команды проверять». |
-| `QueryHintsCommandInterceptor` | Дописывает провайдер-специфичные хинты к SQL. Выбор хинта — по тегам `TagWith("key")` (словарь `тег -> хинт`) или произвольным предикатом над текстом SQL. Пример для SQL Server: `{"recompile": "OPTION (RECOMPILE)"}`. |
-| `ReadOnlyGuardCommandInterceptor` | Блокирует записи: любой INSERT/UPDATE/DELETE/DDL бросает `ReadOnlyContextException` ещё до обращения к БД. Включается по предикату (например, только для reporting-контекста). Чтения не затрагиваются. |
-| `CachingCommandInterceptor` | **Кэш второго уровня**: идентичные SELECT (SQL + значения параметров) отдаются из памяти без похода в БД; TTL, ручная инвалидация (`InvalidateAll` / `Invalidate("TableName")`), опция `invalidateOnWrites: true` чистит кэш после любой записи, внутри явных транзакций кэш по умолчанию отключён. Кэшируются только SELECT/WITH. |
-| `NPlusOneDetectorCommandInterceptor` | Детектор N+1: EF параметризует запросы, поэтому повтор одинакового шаблона SQL в одном контексте — классический признак N+1. Warning один раз на шаблон при превышении порога. |
-| `MetricsCommandInterceptor` | Метрики System.Diagnostics.Metrics: гистограмма `ef.command.duration` (ms) и счётчики `ef.command.executed` / `ef.command.failed` — совместимо с OTel/MeterListener. |
-| `WritesRequireTransactionCommandInterceptor` | Юнит-of-work дисциплина: write-команда вне явной транзакции (например, ad-hoc `ExecuteSqlRaw`) бросает `MissingTransactionException`. |
-| `CommandTimeoutCommandInterceptor` | Динамический `CommandTimeout` на команду: селектор по тексту SQL или словарь тегов (`TagWith("report")` → 300 сек), остальное — контекстный дефолт. |
-| `CommandSourceBlocker` | Governance: блокирует команды по источнику — по умолчанию запрещает запуск EF-миграций из рантайма приложения (`BlockedCommandSourceException`); можно заблокировать ExecuteSqlRaw/ExecuteDelete и т.п. |
-| `RawSqlUsageDetector` | Прозрачность обходных путей: Warning + callback на каждый FromSqlRaw/SqlQuery/ExecuteSqlRaw. |
+| `SqlLoggingCommandInterceptor` | Logs every SQL command: start (Debug), completion with duration (Information), cancellation (Information), error (Error). `includeParameterValues` shows/hides parameter values; `textRedactor` masks PII/cards in everything that reaches the log. |
+| `SlowQueryCommandInterceptor` | Warning when a command exceeds the threshold. Uses `CommandExecutedEventData.Duration` — no hand-rolled stopwatches. Optional predicate selects which commands to check. |
+| `QueryHintsCommandInterceptor` | Appends provider-specific hints to SQL. Hint selection via `TagWith("key")` tags (dictionary `tag -> hint`) or an arbitrary predicate over the SQL text. SQL Server example: `{"recompile": "OPTION (RECOMPILE)"}`. |
+| `ReadOnlyGuardCommandInterceptor` | Blocks writes: any INSERT/UPDATE/DELETE/DDL throws `ReadOnlyContextException` before touching the DB. Enabled by predicate (e.g. reporting context only). Reads unaffected. |
+| `CachingCommandInterceptor` | **Second-level cache**: identical SELECTs (SQL + parameter values) are served from memory without hitting the DB; TTL, manual invalidation (`InvalidateAll` / `Invalidate("TableName")`), `invalidateOnWrites: true` clears the cache after any committed write, disabled by default inside explicit transactions. Only SELECT/WITH are cached. Distributed stores available (`IQueryCacheStore`, Redis package). |
+| `NPlusOneDetectorCommandInterceptor` | N+1 detector: EF parameterizes queries, so repeating the same SQL template within one context is the classic N+1 sign. One Warning per template after the threshold. |
+| `MetricsCommandInterceptor` | System.Diagnostics.Metrics: `ef.command.duration` histogram (ms) plus `ef.command.executed` / `ef.command.failed` counters — OTel/MeterListener compatible. |
+| `WritesRequireTransactionCommandInterceptor` | Unit-of-work discipline: a write command outside an explicit transaction (e.g. ad-hoc `ExecuteSqlRaw`) throws `MissingTransactionException`. |
+| `CommandTimeoutCommandInterceptor` | Dynamic `CommandTimeout` per command: selector over SQL text or tag dictionary (`TagWith("report")` → 300 s), everything else uses the context default. |
+| `CommandSourceBlocker` | Governance: blocks commands by source — by default forbids running EF migrations from app runtime (`BlockedCommandSourceException`); can also block ExecuteSqlRaw/ExecuteDelete etc. |
+| `RawSqlUsageDetector` | Transparency for bypasses: Warning + callback on every FromSqlRaw/SqlQuery/ExecuteSqlRaw. |
 
 ### 3. IDbConnectionInterceptor
 
-| Интерсептор | Что делает |
+| Interceptor | What it does |
 |---|---|
-| `ConnectionLifecycleLoggingInterceptor` | Логи открытия/закрытия/ошибок соединения с длительностью; маскирует `Password/Pwd/Secret/Token` в строке подключения. |
-| `SessionInitConnectionInterceptor` | Выполняет список SQL-операторов при каждом открытии соединения — настройки, которые не выражаются строкой подключения: `SET TRANSACTION ISOLATION LEVEL ...` / `EXEC sp_set_session_context 'TenantId', @p` (SQL Server), `SET search_path TO ...` (PostgreSQL), `PRAGMA foreign_keys=ON` (SQLite). |
-| `DynamicConnectionStringConnectionInterceptor` | **Маршрутизация соединений**: резолвит строку подключения в момент открытия через callback — database-per-tenant, read/write split на реплику, динамические failover-цели. |
+| `ConnectionLifecycleLoggingInterceptor` | Open/close/error logging with duration; masks `Password/Pwd/Secret/Token` in the connection string. |
+| `SessionInitConnectionInterceptor` | Runs a list of SQL statements on every opened connection — settings not expressible via connection string: `SET TRANSACTION ISOLATION LEVEL ...` / `EXEC sp_set_session_context 'TenantId', @p` (SQL Server), `SET search_path TO ...` (PostgreSQL), `PRAGMA foreign_keys=ON` (SQLite). |
+| `DynamicConnectionStringConnectionInterceptor` | **Connection routing**: resolves the connection string at open time via callback — database-per-tenant, read/write split to a replica, dynamic failover targets. |
 
 ### 4. IDbTransactionInterceptor
 
-| Интерсептор | Что делает |
+| Interceptor | What it does |
 |---|---|
-| `TransactionLifecycleLoggingInterceptor` | Полный жизненный цикл транзакций: начало, коммит, rollback (Warning), savepoints, ошибки (Error). |
-| `ForcedIsolationLevelTransactionInterceptor` | Принудительно начинает каждую транзакцию (включая неявные вокруг SaveChanges) с заданного `IsolationLevel`, перехватывая создание транзакции. Учитывайте возможности провайдера: SQL Server соблюдает уровни, SQLite игнорирует. |
+| `TransactionLifecycleLoggingInterceptor` | Full transaction lifecycle: begin, commit, rollback (Warning), savepoints, errors (Error). |
+| `ForcedIsolationLevelTransactionInterceptor` | Forces every transaction (including implicit SaveChanges ones) to start with the given `IsolationLevel` by intercepting transaction creation. Mind provider capabilities: SQL Server honors levels, SQLite ignores them. |
 
 ### 5. IQueryExpressionInterceptor
 
-| Интерсептор | Что делает |
+| Interceptor | What it does |
 |---|---|
-| `QueryTreeLoggingInterceptor` | Пишет LINQ expression tree каждого запроса перед компиляцией (Debug). Точка расширения: наследуйтесь и переопределите `Transform(Expression)` — возвращённое дерево компилируется вместо исходного. |
-| `StrictQueryPolicyQueryExpressionInterceptor` | Комплаенс-страж: запрещает опасные формы запросов — `IgnoreQueryFilters()` (по умолчанию), опционально `ExecuteDelete()`/`ExecuteUpdate()` — бросая `QueryPolicyViolationException` ещё на этапе компиляции запроса. |
+| `QueryTreeLoggingInterceptor` | Logs the LINQ expression tree of every query before compilation (Debug). Extension point: inherit and override `Transform(Expression)` — the returned tree gets compiled instead. |
+| `StrictQueryPolicyQueryExpressionInterceptor` | Compliance guard: forbids dangerous query shapes — `IgnoreQueryFilters()` (by default), optionally `ExecuteDelete()`/`ExecuteUpdate()` — throwing `QueryPolicyViolationException` at query-compile time. |
 
 ### 6. IMaterializationInterceptor
 
-| Интерсептор | Что делает |
+| Interceptor | What it does |
 |---|---|
-| `LoadStampingMaterializationInterceptor` | Проставляет `LoadedAtUtc` сущностям `ILoadTimestamped` в момент материализации — видно, насколько «протух» объект в памяти. |
-| `InitializationMaterializationInterceptor` | Вызывает `IInitializable.OnLoaded()` после материализации — место для пересчёта транзиентного состояния. |
-| `FactoryMethodInstantiationBindingInterceptor` | Покрывает `IInstantiationBindingInterceptor`: подменяет constructor binding фабрикой из словаря `Type -> Func<object>` для legacy-типов без пригодного конструктора. |
-| `RequireQueryTagsInterceptor` | Требует теги `TagWith(...)`: конкретный набор или «хотя бы один» — иначе `QueryPolicyViolationException`. Делает вопрос «какая фича выдала этот запрос» ответным по SQL-комментарию в трейсах. |
-| `PropertyDecryptionMaterializationInterceptor` | Расшифровывает `[Encrypted]` свойства (пара к `PropertyEncryptionSaveChangesInterceptor`). |
+| `LoadStampingMaterializationInterceptor` | Stamps `LoadedAtUtc` on `ILoadTimestamped` entities at materialization — shows how stale an in-memory object is. |
+| `InitializationMaterializationInterceptor` | Calls `IInitializable.OnLoaded()` after materialization — a place to recompute transient state. |
+| `FactoryMethodInstantiationBindingInterceptor` | Covers `IInstantiationBindingInterceptor`: swaps constructor binding for a `Type -> Func<object>` factory dictionary, for legacy types without a usable constructor. |
+| `RequireQueryTagsInterceptor` | Requires `TagWith(...)` tags: an exact set or "at least one" — otherwise `QueryPolicyViolationException`. Makes "which feature issued this query" answerable from the SQL comment in traces. |
+| `PropertyDecryptionMaterializationInterceptor` | Decrypts `[Encrypted]` properties (pair of `PropertyEncryptionSaveChangesInterceptor`). |
 
 ### 7. IIdentityResolutionInterceptor
 
-| Интерсептор | Что делает |
+| Interceptor | What it does |
 |---|---|
-| `OverwriteIdentityResolutionInterceptor` / `IgnoreIncomingIdentityResolutionInterceptor` | Разрешают конфликт ключей при `Attach/Add` второй копии той же сущности: входящие значения затирают отслеживаемые (last-write-wins) или игнорируются (cache semantics). В EF Core 10 также есть встроенные `UpdatingIdentityResolutionInterceptor` / `IgnoringIdentityResolutionInterceptor`. |
-| `NullMergeIdentityResolutionInterceptor` | Null-preserving merge: входящие значения заполняют только null/пустые свойства отслеживаемого экземпляра — непустые данные всегда побеждают. |
-| `NewestWinsIdentityResolutionInterceptor` | Last-write-wins по штампам: выживает экземпляр с более свежим `UpdatedAtUtc`. |
+| `OverwriteIdentityResolutionInterceptor` / `IgnoreIncomingIdentityResolutionInterceptor` | Resolve key conflicts when `Attach`/`Add`-ing a second copy of the same entity: incoming values overwrite the tracked ones (last-write-wins) or are ignored (cache semantics). EF Core 10 also ships built-in `UpdatingIdentityResolutionInterceptor` / `IgnoringIdentityResolutionInterceptor`. |
+| `NullMergeIdentityResolutionInterceptor` | Null-preserving merge: incoming values only fill null/empty properties of the tracked instance — non-empty data always wins. |
+| `NewestWinsIdentityResolutionInterceptor` | Last-write-wins by timestamps: the instance with the fresher `UpdatedAtUtc` survives. |
 
-### 8. Хелперы модели (не интерсепторы, но завершают картину)
+### 8. Model helpers (not interceptors, but complete the picture)
 
 ```csharp
-modelBuilder.ApplySoftDeleteFilters();          // !IsDeleted всем ISoftDeletableEntity
-modelBuilder.ApplyTenantFilters(tenantProvider); // TenantId == current всем ITenantEntity
+modelBuilder.ApplySoftDeleteFilters();            // !IsDeleted for all ISoftDeletableEntity
+modelBuilder.ApplyTenantFilters(tenantProvider);  // TenantId == current for all ITenantEntity
 ```
-Фильтры сливаются с существующими через AndAlso (анонимный) или добавляются отдельными
-именованными фильтрами EF 10 (`EfCoreInterceptors.SoftDelete` / `.Tenant`) — ничего не затирается.
 
-### 9. Наблюдаемость (System.Diagnostics.Metrics)
+Filters merge with existing ones via AndAlso (anonymous) or are added as separate
+named EF 10 filters (`EfCoreInterceptors.SoftDelete` / `.Tenant`) — nothing is overwritten.
+`ApplyRowLevelSecurity(ctx, (ctx, e) => ...)` adds executing-context RLS predicates.
 
-Все метрики публикуются в метре `EfCore.Interceptors` — подключите MeterListener/OTLP-экспортёр.
+### 9. Observability (System.Diagnostics.Metrics)
 
-| Интерсептор | Инструменты |
+All metrics are published to the `EfCore.Interceptors` meter — attach a MeterListener/OTLP exporter.
+
+| Interceptor | Instruments |
 |---|---|
-| `SaveChangesMetricsInterceptor` | `ef.save.duration` (гистограмма, ms), `ef.save.executed`, `ef.save.failed`, `ef.save.entities` |
+| `SaveChangesMetricsInterceptor` | `ef.save.duration` (histogram, ms), `ef.save.executed`, `ef.save.failed`, `ef.save.entities` |
 | `TransactionMetricsInterceptor` | `ef.transaction.started/committed/rolledback/failed`, `ef.transaction.duration` |
 | `ConnectionMetricsInterceptor` | `ef.connection.opened/closed/failed`, `ef.connection.open_duration` |
-| `LongRunningTransactionDetector` | Warning-лог, когда транзакция держится дольше порога (блокировки/vacuum) |
-| `SlowSaveChangesDetector` | Warning-лог, когда один SaveChanges дольше порога |
-| `CommandsPerSaveDiagnosticInterceptor` | Сколько SQL-команд породил один SaveChanges — ловит скрытый «N+1 на записи» |
-| `MaterializationMetricsInterceptor` | `ef.materialization.entities` — всплеск = cartesian explosion / забыли пагинацию |
-| `MetricsCommandInterceptor` (см. выше) | `ef.command.duration/executed/failed` |
+| `LongRunningTransactionDetector` | Warning log when a transaction is held longer than the threshold (locks/vacuum) |
+| `SlowSaveChangesDetector` | Warning log when a single SaveChanges exceeds the threshold |
+| `CommandsPerSaveDiagnosticInterceptor` | How many SQL commands one SaveChanges produced — catches hidden "N+1 on write" |
+| `MaterializationMetricsInterceptor` | `ef.materialization.entities` — a spike means cartesian explosion / forgotten pagination |
+| `MetricsCommandInterceptor` (see above) | `ef.command.duration/executed/failed` |
 
-Пример чтения метрик в тестах/консоли:
+Reading metrics in tests/console:
 
 ```csharp
 using var listener = new MeterListener();
@@ -194,7 +183,7 @@ listener.Start();
 
 ---
 
-## Контракты сущностей
+## Entity contracts
 
 ```csharp
 public interface IAuditableEntity      { DateTimeOffset CreatedAtUtc { get; set; } string? CreatedBy { get; set; } DateTimeOffset? UpdatedAtUtc { get; set; } string? UpdatedBy { get; set; } }
@@ -209,30 +198,30 @@ public interface ITenantEntity         { string? TenantId { get; set; } }
 public interface ITenantProvider       { string? CurrentTenantId { get; } }  // + StaticTenantProvider
 ```
 
-Свойства контрактов должны быть замаплены в модели.
+Contract properties must be mapped in the model.
 
-Доменные исключения библиотеки: `CrossTenantAccessException`, `MassOperationException`, `ConcurrencyConflictException`, `QueryPolicyViolationException`, `MissingTransactionException`, `ReadOnlyContextException`.
+Domain exceptions: `CrossTenantAccessException`, `MassOperationException`, `ConcurrencyConflictException`, `QueryPolicyViolationException`, `MissingTransactionException`, `ReadOnlyContextException`.
 
-Готовые сущности для маппинга (namespace `EfCore.Interceptors.Entities`): `ChangeLogEntry` (аудит-трейл) и `OutboxMessage` (outbox) — добавьте их в модель:
+Ready-made mappable entities (namespace `EfCore.Interceptors.Entities`): `ChangeLogEntry` (audit trail) and `OutboxMessage` (outbox) — add them to the model:
 ```csharp
 modelBuilder.Entity<ChangeLogEntry>();
 modelBuilder.Entity<OutboxMessage>();
 ```
 
-## Типовая связка: soft delete целиком
+## Typical wiring: soft delete end-to-end
 
 ```csharp
-// 1. Сущность
+// 1. Entity
 public class Order : ISoftDeletableEntity, IAuditableEntity { /* ... */ }
 
-// 2. Глобальный фильтр читающей стороны
+// 2. Global read-side filter
 modelBuilder.Entity<Order>().HasQueryFilter(o => !o.IsDeleted);
 
-// 3. Регистрация пишущей стороны
+// 3. Write-side registration
 .UseEfInterceptors(s => s.WithSoftDeletes(users))
 ```
 
-## Доменные события end-to-end
+## Domain events end-to-end
 
 ```csharp
 public class Order : IHasDomainEvents
@@ -261,9 +250,9 @@ public sealed record OrderPaid(int OrderId, decimal Total) : IDomainEvent
 
 ---
 
-## API регистрации
+## Registration API
 
-**На options builder** (работает везде, DI не обязателен):
+**On the options builder** (works everywhere, DI not required):
 `UseEfInterceptors(Action<EfInterceptorsSetup>)` — fluent: `WithAuditing`, `WithSoftDeletes`,
 `WithDomainEvents`, `WithSqlLogging`, `WithSlowQueryWarning`, `WithQueryHints`, `WithReadOnlyGuard`,
 `WithSessionInit`, `WithConnectionLogging`, `WithTransactionLogging`, `WithQueryTreeLogging`,
@@ -278,66 +267,79 @@ public sealed record OrderPaid(int OrderId, decimal Total) : IDomainEvent
 `WithLongRunningTransactionDetection(threshold)`, `WithCommandTimeout(...)` / `WithCommandTimeoutByTags(...)`,
 `WithInitialization()`, `WithPropertyEncryption(encryptor)`, `WithCommandSourceBlocker(...)`, `WithRawSqlUsageDetection(...)`, `WithVersionCounter()`, `WithNewestWinsIdentityResolution()`, `WithMaterializationMetrics()`, `WithRequiredQueryTags(...)` / `WithRequireAnyQueryTag()`,
 `WithValidation()`, `WithSlowSaves(threshold)`, `WithConstructorFactories(map)`, `WithConcurrencyRetry(policy, maxRetries)`, `WithCustomValidation(...)`, `WithCommandsPerSaveDiagnostics(n)`
-+ `Add(IInterceptor)` для своих.
++ `Add(IInterceptor)` for your own.
 
-Со стороны модели: `modelBuilder.ApplySoftDeleteFilters()` и `modelBuilder.ApplyTenantFilters(provider)`.
+Model side: `modelBuilder.ApplySoftDeleteFilters()` and `modelBuilder.ApplyTenantFilters(provider)`.
 
-**Через DI**: `services.AddEfInterceptors(...)` + `.UseEfInterceptorsFrom(serviceProvider)`.
+**Via DI**: `services.AddEfInterceptors(...)` + `.UseEfInterceptorsFrom(serviceProvider)`.
+
+**Startup validation** (fail fast on silent misconfiguration — soft-delete without a filter,
+ChangeLog/Outbox without mapped entities, duplicates, provider fit):
+
+```csharp
+Action<EfInterceptorsSetup> configure = s => s.WithAuditing().WithSoftDeletes().WithChangeLog();
+optionsBuilder.UseEfInterceptors(configure);
+
+// ...at startup, against the built context:
+var setup = new EfInterceptorsSetup();
+configure(setup);
+setup.ValidateAndThrow(db);   // throws on the first error; setup.Validate(db) returns all findings
+```
 
 
 ---
 
-## Готовый рабочий пример: ASP.NET Core (samples/WebApiSample)
+## Working example: ASP.NET Core (samples/WebApiSample)
 
-Запуск и проверка вживую:
+Run and verify live:
 
 ```bash
 dotnet run --project samples/WebApiSample --urls http://localhost:5000
-# в другом терминале:
+# in another terminal:
 curl -X POST http://localhost:5000/products -H "X-User: alice" \
      -H "Content-Type: application/json" -d '{"name":"Keyboard","price":49.9}'
-curl http://localhost:5000/outbox        # процессор уже доставил события (ProcessedAtUtc != null)
+curl http://localhost:5000/outbox        # the processor already delivered events (ProcessedAtUtc != null)
 ```
 
-Ключевой приём — **scoped-интерсепторы для per-request состояния** (текущий пользователь из заголовка):
+The key trick — **scoped interceptors for per-request state** (current user from a header):
 
 ```csharp
 builder.Services.AddHttpContextAccessor();
-builder.Services.AddScoped<ICurrentUserProvider, HttpContextCurrentUserProvider>(); // читает X-User
-builder.Services.AddScoped<AuditSaveChangesInterceptor>();                          // сам интерсептор тоже scoped
+builder.Services.AddScoped<ICurrentUserProvider, HttpContextCurrentUserProvider>(); // reads X-User
+builder.Services.AddScoped<AuditSaveChangesInterceptor>();                          // the interceptor is scoped too
 
 builder.Services.AddDbContext<ProductDbContext>((sp, options) => options
     .UseSqlite(cs)
-    .AddInterceptors(sp.GetRequiredService<AuditSaveChangesInterceptor>())   // ← из контейнера
+    .AddInterceptors(sp.GetRequiredService<AuditSaveChangesInterceptor>())   // ← from the container
     .UseEfInterceptors(s => s
-        .WithSoftDeletes()                              // stateless — можно прямо так
-        .WithOutbox()                                   // события -> таблица той же транзакцией
+        .WithSoftDeletes()                              // stateless — inline is fine
+        .WithOutbox()                                   // events -> table in the same transaction
         .WithSlowQueryWarning(TimeSpan.FromMilliseconds(300))
-        .WithSqlLogging(sampleRate: 0.25)               // 25% SQL-логов, ошибки — всегда
+        .WithSqlLogging(sampleRate: 0.25)               // 25% of SQL logs, errors — always
         .WithCommandMetrics()
         .WithNPlusOneDetection(5)));
 
-// фоновая доставка outbox-сообщений:
+// background outbox delivery:
 builder.Services.AddScoped<IOutboxMessageHandler, ProductCreatedHandler>();
 builder.Services.AddOutboxProcessor<ProductDbContext>(pollInterval: TimeSpan.FromSeconds(1));
 ```
 
-Эндпоинты демки: `GET/POST/DELETE /products`, `POST /products/{id}/restore` (корзина),
-`GET /outbox` (очередь и статусы доставки).
+Demo endpoints: `GET/POST/DELETE /products`, `POST /products/{id}/restore` (recycle bin),
+`GET /outbox` (queue and delivery statuses).
 
 ---
 
-## Экосистема проекта
+## Project ecosystem
 
-### MediatR-интеграция (`src/EfCore.Interceptors.MediatR`)
+### MediatR integration (`src/EfCore.Interceptors.MediatR`)
 
-Мост между доменными событиями и MediatR-пайплайном:
+Bridge between domain events and the MediatR pipeline:
 
 ```csharp
 builder.Services.AddMediatR(cfg => cfg.RegisterServicesFromAssemblyContaining<Program>());
 builder.Services.AddMediatRDomainEventDispatcher();   // IDomainEventDispatcher -> IMediator
 
-// обработчики подписываются на обёртку:
+// handlers subscribe to the wrapper:
 public class ProductCreatedHandler
     : INotificationHandler<DomainEventNotification<ProductCreated>>
 {
@@ -345,9 +347,60 @@ public class ProductCreatedHandler
 }
 ```
 
-### Бенчмарки (`benchmarks/EfCore.Interceptors.Benchmarks`)
+### MassTransit bridge (`src/EfCore.Interceptors.MassTransit`)
 
-Оверхед полного набора интерсепторов на SaveChanges против чистого контекста:
+Publish domain events through the MassTransit bus, including an outbox-to-bus handler:
+
+```bash
+dotnet add package EfCore.Interceptors.MassTransit
+```
+
+### Shared cache over Redis (`src/EfCore.Interceptors.Caching.Redis`)
+
+Multi-instance second-level cache via `IDistributedCache`:
+
+```csharp
+services.AddEfInterceptorsRedisCache(...);   // DistributedQueryCacheStore
+s.WithRedisCache(...);                       // route the command interceptor at Redis
+```
+
+### OpenTelemetry wiring (`src/EfCore.Interceptors.OpenTelemetry`)
+
+```csharp
+services.AddEfCoreInterceptorsInstrumentation();  // registers both ActivitySources with the tracer provider
+```
+
+### Health checks (`src/EfCore.Interceptors.HealthChecks`)
+
+Outbox lag/pending/dead-letter probes:
+
+```csharp
+services.AddEfInterceptorsHealth<TContext>();  // AddEfInterceptorsHealth check
+```
+
+### Dashboard (`src/EfCore.Interceptors.Dashboard`)
+
+Opt-in web UI: stats, outbox explorer, dead-letter retry/purge, changelog viewer, cache panel:
+
+```csharp
+app.MapEfInterceptorsDashboard<TContext>();  // protect with RequireAuthorization() in production
+```
+
+### Testing doubles (`src/EfCore.Interceptors.Testing`)
+
+Framework-free fakes: `FakeCurrentUserProvider`, `FakeTenantProvider`,
+`RecordingDomainEventDispatcher`, `InMemoryOutboxMessageHandler`, encryptor contract checks.
+
+### Roslyn analyzers (EFI1001–EFI1005 bulk guards + EFI2001/EFI2003 strictness, shipped inside the core package)
+
+Bulk-bypass guards: warn when `ExecuteDelete`/`ExecuteUpdate`/`SetProperty` touches
+`ISoftDeletableEntity`, `[Encrypted]` or `TenantId` instead of the safe `BulkExtensions` helpers.
+Strictness guards: `EFI2001` flags `IgnoreQueryFilters()` (bypasses soft-delete/tenant filters),
+`EFI2003` flags `Where()` over `[Encrypted]` properties (ciphertext never matches plaintext).
+
+### Benchmarks (`benchmarks/EfCore.Interceptors.Benchmarks`)
+
+Overhead of the full interceptor set on SaveChanges vs. a bare context:
 
 ```bash
 dotnet run -c Release --project benchmarks/EfCore.Interceptors.Benchmarks --filter *SaveChanges*
@@ -355,87 +408,102 @@ dotnet run -c Release --project benchmarks/EfCore.Interceptors.Benchmarks --filt
 
 ### CI
 
-`.github/workflows/ci.yml`: restore → Release-build → tests → `dotnet pack` → артефакт `.nupkg`.
+`.github/workflows/ci.yml`: format check → build/test matrix (`net8.0`/`net10.0` × ubuntu/windows,
+139 tests per runtime) → coverage upload (Codecov) → public-API check → pack of every package.
 
-### Пакет
+### Package
 
 ```bash
-dotnet pack src/EfCore.Interceptors -c Release -o artifacts
-# artifacts/EfCore.Interceptors.<version>.nupkg (+ snupkg), README внутри пакета
+dotnet pack EfCoreInterceptors.slnx -c Release -o artifacts
+# artifacts/EfCore.Interceptors.<version>.nupkg (+ snupkg), README inside the package
 ```
-## Ограничения bulk-операций — критично
 
-`ExecuteUpdate` / `ExecuteDelete` (EF Core 7+) транслируются напрямую в `UPDATE … WHERE` / `DELETE … WHERE` и **не проходят через `ISaveChangesInterceptor`**.
-Следовательно они обходят: soft delete → физическое удаление, шифрование → запись plaintext, guards/валидацию/аудит/ChangeLog/Outbox/domain events — всё молча.
+## Bulk-operation limitations — critical
 
-| Интерсептор | Что происходит при bulk | Тяжесть |
+`ExecuteUpdate` / `ExecuteDelete` (EF Core 7+) translate directly into `UPDATE … WHERE` / `DELETE … WHERE`
+and **do not go through `ISaveChangesInterceptor`**.
+So they bypass: soft delete → physical delete, encryption → plaintext write, guards/validation/audit/ChangeLog/Outbox/domain events — all silently.
+
+| Interceptor | What happens on bulk | Severity |
 |---|---|---|
-| `SoftDeleteSaveChangesInterceptor` | Физическое удаление | 🔴 потеря данных |
-| `PropertyEncryptionSaveChangesInterceptor` | Открытый текст в колонке шифротекста | 🔴 утечка/порча |
-| `DeleteGuard` / `ImmutableGuard` | Удаление без исключения | 🔴 комплаенс |
-| `MultiTenancySaveChangesInterceptor` | `SetProperty(e=>e.TenantId,"other")` передаст строки чужому тенанту | 🔴 безопасность |
-| `ChangeLog` / `Audit` / `Outbox` / `DomainEvents` / `Validation` | Молча не отрабатывают | 🟠 |
+| `SoftDeleteSaveChangesInterceptor` | Physical delete | 🔴 data loss |
+| `PropertyEncryptionSaveChangesInterceptor` | Plaintext in a ciphertext column | 🔴 leak/corruption |
+| `DeleteGuard` / `ImmutableGuard` | Delete without exception | 🔴 compliance |
+| `MultiTenancySaveChangesInterceptor` | `SetProperty(e=>e.TenantId,"other")` hands rows to another tenant | 🔴 security |
+| `ChangeLog` / `Audit` / `Outbox` / `DomainEvents` / `Validation` | Silently skipped | 🟠 |
 
-Защита:
+Protection:
 ```csharp
-// Уровень 1 — guard (в библиотеке уже есть):
+// Layer 1 — guard (shipped in the library):
 .UseEfInterceptors(s => s.WithBulkOperationGuard(BulkOperationPolicy.Throw))
 
-// Уровень 2 — strict policy на этапе компиляции LINQ:
+// Layer 2 — strict policy at LINQ compile time:
 .UseEfInterceptors(s => s.WithStrictQueryPolicy(forbidExecuteDelete: true, forbidExecuteUpdate: true))
 
-// Безопасные альтернативы — библиотечные хелперы (todo vNext):
-// await db.Orders.Where(...).ExecuteSoftDeleteAsync(users, timeProvider, ct);
+// Safe alternatives — library helpers:
+await db.Orders.Where(...).ExecuteSoftDeleteAsync(users, timeProvider, ct);
+await db.Orders.Where(...).ExecuteAuditedUpdateAsync(...);
+await db.Secrets.Where(...).ExecuteEncryptedUpdateAsync(e => e.Value, plain, encryptor, ct);
 ```
-Подробно: см. раздел «Ограничения bulk-операций» выше.
 
-## Провайдеры и совместимость
+## Providers and compatibility
 
-| Провайдер | Примечание |
+| Provider | Notes |
 |---|---|
-| SQL Server, PostgreSQL, SQLite, MySQL/Pomelo | Полная поддержка реляционных интерсепторов |
-| Cosmos (нереляционный) | `IDbCommandInterceptor`/`IDbConnectionInterceptor`/`IDbTransactionInterceptor` не вызываются — работают только SaveChanges/Materialization/IdentityResolution |
-| InMemory | Не реляционный — команда-тесты на нём бессмысленны для `SqlLogging`/`Caching`/`N+1` |
+| SQL Server, PostgreSQL, SQLite, MySQL/Pomelo | Full support for relational interceptors |
+| Cosmos (non-relational) | `IDbCommandInterceptor`/`IDbConnectionInterceptor`/`IDbTransactionInterceptor` are not invoked — only SaveChanges/Materialization/IdentityResolution work |
+| InMemory | Not relational — command tests on it are meaningless for `SqlLogging`/`Caching`/`N+1` |
 
-Фичи EF Core:
-- **`AddDbContextPool` ломает состояние по `DbContext`** (доменные события/outbox счётчики перетекают между запросами). Реализуйте `IResettableService.ResetState()` на контексте или документируйте несовместимость.
-- **Compiled models** фиксируют query filters — tenant-фильтр, зависящий от рантайма, не сработает.
-- **Complex types** (`entry.ComplexProperties`) теперь учитываются в аудите/ChangeLog/шифровании (рекурсивный обход).
-- **Шифрование**: payload v1 = `0x01|nonce|tag|cipher` + AAD (`table|column|pk`) против cross-column swap; legacy payload без версии дешифруется по fallback.
+EF Core notes:
+- **`AddDbContextPool` breaks per-`DbContext` state** (domain events/outbox counters leak between requests). Implement `IResettableService.ResetState()` on the context or document the incompatibility.
+- **Compiled models** freeze query filters — a runtime-dependent tenant filter won't apply.
+- **Complex types** (`entry.ComplexProperties`) are honored in audit/ChangeLog/encryption (recursive walk).
+- **Encryption**: payload v1 = `0x01|nonce|tag|cipher` + AAD (`table|column|pk`) against ciphertext swap across columns; key-ring payload v2 = `0x02|kid|nonce|tag|cipher` with `ReEncryptAsync` rotation runner; legacy payloads decrypt via fallback.
+- **Named query filters** (`HasQueryFilter(name)`) require .NET 10 / EF 10; on `net8.0` anonymous filters are used.
 
-## Нюансы и рекомендации
+## Notes and recommendations
 
-- **Времена жизни.** Интерсепторы регистрируются на каждый `DbContext`; сами классы stateless и потокобезопасны (кроме документированных буферов доменных событий/outbox, ключуемых по экземпляру контекста через `ConditionalWeakTable`). Один экземпляр можно шарить между контекстами — так работает инвалидация кэша (`WithSecondLevelCache` + общий `CachingCommandInterceptor`).
-- **Мультитенантность**: `ApplyTenantFilters(provider)` захватывает провайдера в кэш модели — первый тенант «залипает». Регистрируйте `TenantModelCacheKeyFactory` (`options.ReplaceService<IModelCacheKeyFactory, TenantModelCacheKeyFactory>()`) или используйте фильтр через свойство контекста `e => e.TenantId == CurrentTenantId`. Модификация `TenantId` после создания запрещена (immutable) — `CrossTenantAccessException` при `OriginalValue != CurrentValue`.
-- **Soft delete не фильтрует чтения.** Обязательно добавляйте глобальный query filter; иначе удалённые строки будут видны. `IgnoreQueryFilters()` также покажет их (удобно для корзины) — а `WithStrictQueryPolicy` может такие вызовы запрещать.
-- **Доменные события** диспетчеризуются строго после коммита (at-least-once внутри процесса). Хендлер упал — получите `InvalidOperationException`; данные уже сохранены. Для гарантированной доставки используйте `WithOutbox()`: события попадают в таблицу в той же транзакции. Outbox processor использует `LockedUntilUtc/AttemptCount` + `FOR UPDATE SKIP LOCKED`-подобный claim для multi-instance.
-- **ChangeLog/Outbox** требуют замапленных сущностей `ChangeLogEntry`/`OutboxMessage`. Дифф пишется по всем свойствам Added/Deleted и по изменённым для Modified (включая owned). Для `Added` с DB-генерируемым PK ключ патчится вторым `SaveChanges` в той же транзакции.
-- **Кэш второго уровня** — in-memory, на процесс, с `SizeLimit` и инвалидацией на `TransactionCommitted`. Включите `invalidateOnWrites: true`, чтобы записи автоматически чистили кэш после коммита, либо зовите `Invalidate*()` после внешних изменений. Внутри явных транзакций кэш по умолчанию обойдён. В multi-instance используйте `IQueryCacheStore` / Redis.
-- **QueryHints** модифицируют текст SQL — тестируйте на целевом провайдере (хинт SQL Server на SQLite даст синтаксическую ошибку; используйте комментарии как в примере). Батчи с несколькими statement не патчатся.
-- **ReadOnlyGuard / StrictQueryPolicy** — guard теперь смотрит на `CommandSource` (SaveChanges/Migrations/BulkUpdate) и только для `ExecuteSqlRaw` — на текст через `[GeneratedRegex]` (best-effort). Policy проверяет формы запросов при компиляции.
-- **Шифрование `[Encrypted]`** хранит в колонке шифротекст: поиск по равенству/LIKE по зашифрованным колонкам невозможен (nonce случайный). `AesGcmPropertyValueEncryptor` v1: `version|nonce|tag|cipher` + optional AAD (`table|column|pk`) против перестановки шифротекстов; legacy payload дешифруется fallback. Для продакшена берите envelope-шифрование с внешним KMS. Шифрование выполняется на клиенте.
-- **ForcedIsolationLevel** применяется ко всем транзакциям контекста, включая неявные SaveChanges — оценивайте влияние на блокировки.
-- **Аудит** доверяет `ICurrentUserProvider`. В веб-приложении реализуйте его поверх `IHttpContextAccessor` и регистрируйте интерсептор как Scoped. `WithIdentityResolution(IdentityResolutionMode.Overwrite)` предпочтительнее `bool` overload (избегайте boolean trap). `CreatedAtUtc` не затирается при импорте, если уже заполнено; `UpdatedAtUtc` — `DateTimeOffset?`.
-- Interceptor'ы выполняются синхронно в горячем пути запросов — избегайте тяжёлой работы.
+- **Lifetimes.** Interceptors are registered per `DbContext`; the classes themselves are stateless and thread-safe (except documented domain-event/outbox buffers keyed by context instance via `ConditionalWeakTable`). One instance can be shared across contexts — that's how cache invalidation works (`WithSecondLevelCache` + shared `CachingCommandInterceptor`).
+- **Multi-tenancy**: `ApplyTenantFilters(provider)` captures the provider in the model cache — the first tenant "sticks". Register `TenantModelCacheKeyFactory` (`options.ReplaceService<IModelCacheKeyFactory, TenantModelCacheKeyFactory>()`) or filter via a context property `e => e.TenantId == CurrentTenantId`. Changing `TenantId` after creation is forbidden (immutable) — `CrossTenantAccessException` when `OriginalValue != CurrentValue`.
+- **Soft delete doesn't filter reads.** Always add a global query filter; otherwise deleted rows stay visible. `IgnoreQueryFilters()` also reveals them (handy for a recycle bin) — and `WithStrictQueryPolicy` can forbid such calls.
+- **Domain events** dispatch strictly after commit (at-least-once in-process). Handler threw — you get `InvalidOperationException`; data is already saved. For guaranteed delivery use `WithOutbox()`: events land in a table in the same transaction. The outbox processor uses `LockedUntilUtc/AttemptCount` + `FOR UPDATE SKIP LOCKED`-style claim for multi-instance.
+- **ChangeLog/Outbox** require mapped `ChangeLogEntry`/`OutboxMessage` entities. The diff covers all properties for Added/Deleted and changed ones for Modified (including owned). For `Added` with DB-generated PKs the key is patched with a second `SaveChanges` in the same transaction.
+- **Second-level cache** is in-process with `SizeLimit` and invalidation on `TransactionCommitted`. Enable `invalidateOnWrites: true` so writes auto-clear the cache after commit, or call `Invalidate*()` after external changes. Inside explicit transactions the cache is bypassed by default. For multi-instance use `IQueryCacheStore` / Redis.
+- **QueryHints** modify SQL text — test against the target provider (a SQL Server hint fails on SQLite with a syntax error; use comments as in the sample). Batches with multiple statements are not patched.
+- **ReadOnlyGuard / StrictQueryPolicy** — the guard now looks at `CommandSource` (SaveChanges/Migrations/BulkUpdate) and at text via `[GeneratedRegex]` only for `ExecuteSqlRaw` (best-effort). The policy checks query shapes at compile time.
+- **`[Encrypted]` columns** hold ciphertext: equality/LIKE search over encrypted columns is impossible (random nonce). `AesGcmPropertyValueEncryptor` v1: `version|nonce|tag|cipher` + optional AAD (`table|column|pk`) against ciphertext shuffling; legacy payloads decrypt via fallback. For production use envelope encryption with an external KMS. Encryption happens on the client.
+- **ForcedIsolationLevel** applies to all context transactions, including implicit SaveChanges ones — evaluate the locking impact.
+- **Audit** trusts `ICurrentUserProvider`. In web apps implement it over `IHttpContextAccessor` and register the interceptor as Scoped. Prefer `WithIdentityResolution(IdentityResolutionMode.Overwrite)` over the `bool` overload (avoids the boolean trap). `CreatedAtUtc` is preserved on import when already set; `UpdatedAtUtc` is `DateTimeOffset?`.
+- Interceptors run synchronously on the request hot path — avoid heavy work.
 
-## Структура решения
+## Solution structure
 
 ```
-src/EfCore.Interceptors/         # библиотека (net10.0)
-  Abstractions/                  # контракты сущностей, маркеры, шифрование
+src/EfCore.Interceptors/         # library (net8.0;net10.0)
+  Abstractions/                  # entity contracts, markers, encryption
   Entities/                      # ChangeLogEntry, OutboxMessage
-  Saving/ Commands/ Connections/ # интерсепторы по типам
+  Saving/ Commands/ Connections/ # interceptors by type
   Transactions/ Queries/
   Materialization/ Tracking/
-  Observability/                 # метрики и watchdog'и
-samples/SampleApp/               # демо всех сценариев (SQLite): dotnet run --project samples/SampleApp
-tests/EfCore.Interceptors.Tests/ # xUnit: 70 тестов
+  Observability/                 # metrics and watchdogs
+  Sagas/ TemporalQuery.cs ...    # XL wave: sagas, temporal, RLS, GDPR, expand-contract
+src/EfCore.Interceptors.{MediatR,MassTransit,Caching.Redis,OpenTelemetry,HealthChecks,Dashboard,Testing}/
+src/EfCore.Interceptors.Analyzers/   # Roslyn EFI1001-EFI1005 (shipped inside the core package)
+samples/SampleApp/               # demo of all scenarios (SQLite): dotnet run --project samples/SampleApp
+samples/WebApiSample/            # ASP.NET Core demo with outbox: see above
+tests/EfCore.Interceptors.Tests/ # xUnit: 139 tests × (net8.0, net10.0)
+benchmarks/EfCore.Interceptors.Benchmarks/
 ```
 
-## Проверка
+## Verification
 
 ```bash
-dotnet build EfCoreInterceptors.sln
-dotnet test  tests/EfCore.Interceptors.Tests
-dotnet run --project samples/SampleApp     # консольный прогон всех сценариев
+dotnet build EfCoreInterceptors.slnx -c Release
+dotnet test tests/EfCore.Interceptors.Tests -c Release   # both TFMs
+dotnet run --project samples/SampleApp                   # console run of all scenarios
 ```
+
+---
+
+- Full Russian docs: [README.ru.md](README.ru.md)
+- [CHANGELOG.md](CHANGELOG.md) · [CONTRIBUTING.md](CONTRIBUTING.md) · [SECURITY.md](SECURITY.md) · [THREAT-MODEL.md](THREAT-MODEL.md) · [LICENSE](LICENSE)

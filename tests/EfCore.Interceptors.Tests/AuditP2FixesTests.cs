@@ -81,7 +81,9 @@ public class AuditP2HealthTests
         {
             seed.OutboxMessages.Add(new OutboxMessage
             {
-                Type = "t", PayloadJson = "{}", OccurredAtUtc = DateTimeOffset.UtcNow,
+                Type = "t",
+                PayloadJson = "{}",
+                OccurredAtUtc = DateTimeOffset.UtcNow,
             });
             seed.SaveChanges();
         }
@@ -103,8 +105,11 @@ public class AuditP2HealthTests
                 new OutboxMessage { Type = "t", PayloadJson = "{}", OccurredAtUtc = old },
                 new OutboxMessage
                 {
-                    Type = "t", PayloadJson = "{}", OccurredAtUtc = old,
-                    DeadLetteredAtUtc = DateTimeOffset.UtcNow, AttemptCount = 10,
+                    Type = "t",
+                    PayloadJson = "{}",
+                    OccurredAtUtc = old,
+                    DeadLetteredAtUtc = DateTimeOffset.UtcNow,
+                    AttemptCount = 10,
                 });
             seed.SaveChanges();
         }
@@ -126,7 +131,7 @@ public class AuditP2GdprTests
         using (var seed = sqlite.CreateContext())
         {
             seed.SubjectRecords.Add(new SubjectRecord
-                { SubjectId = "user:42", Email = "a@b.c", Notes = "keep" });
+            { SubjectId = "user:42", Email = "a@b.c", Notes = "keep" });
             seed.SaveChanges();
         }
         using (var db = sqlite.CreateContext())
@@ -152,7 +157,7 @@ public class AuditP2GdprTests
         using (var seed = sqlite.CreateContext())
         {
             seed.SubjectRecords.Add(new SubjectRecord
-                { SubjectId = "user:7", Email = "x@y.z", Notes = "keep" });
+            { SubjectId = "user:7", Email = "x@y.z", Notes = "keep" });
             seed.SaveChanges();
         }
         using (var db = sqlite.CreateContext())

@@ -1,6 +1,35 @@
 # Changelog
 
-## Unreleased — XL wave: temporal, dashboard, sagas (docs d/03.1, 03.13, 03.15)
+## Unreleased
+- Security S-2 (strict tenant isolation): `WithMultiTenancy()` installs a strict query policy
+  (`IgnoreQueryFilters` forbidden) by default, opt-out via `strictQueryPolicy: false`;
+  `WithStrictQueryPolicy` gains `forbidUntaggedRawSql` + `rawSqlBypassTag` (`TagWith("tenant-safe")`
+  allow-list for filter-bypassing `FromSql`/`SqlQuery`, detected via query-root extension nodes)
+- Security S-5 (encrypted changelog leak): `ChangeLog` redacts `[Encrypted]` properties to
+  `[encrypted]` (both `old` and `new` — `OriginalValue` used to leak decrypted plaintext on update);
+  new `[ExcludeFromChangeLog]` attribute skips properties entirely; explicit `Encryption (75)`
+  order before `ChangeLog (100)` pinned by `ArchitectureTests` + `ChangeLogEncryptionTests`
+- Security S-6 (outbox deserialization): `DispatchingOutboxMessageHandler` rejects resolved types
+  that are not `IDomainEvent` fail-closed; new `AllowListOutboxTypeResolver` (explicit types
+  and/or assemblies) for production; `OutboxTypeResolverTests` pin the boundary
+- Security S-1: new `THREAT-MODEL.md` (actors, STRIDE per feature, non-guarantees, supply chain)
+- DX I-1 (startup validator): `EfInterceptorsSetup.Validate/ValidateAndThrow` + `EfInterceptorsValidator`
+  (soft-delete without filter → EFI2002 error, ChangeLog/Outbox without mapping, duplicate
+  interceptors, non-relational provider, multitenancy without policy); `InterceptorValidatorTests`
+- Analyzers EFI2001 (`IgnoreQueryFilters` bypass) + EFI2003 (`Where` over `[Encrypted]`),
+  verified against a scratch consumer (EFI2003 has no false positive on plain properties);
+  EFI2002 is covered at runtime by the validator (static detection needs model knowledge)
+- Tests: 147 → 164, all green on `net8.0` + `net10.0` (`TenantStrictIsolationTests`,
+  `OutboxTypeResolverTests`, `ChangeLogEncryptionTests`, `InterceptorValidatorTests`,
+  plus `PostgresIntegrationTests` with Testcontainers under `Category=Integration`)
+
+## 1.1.0 — 2026-09-03
+
+Consolidates all previously unreleased waves (P0 → XL) into the first minor release.
+CI now runs a test matrix (`net8.0`/`net10.0` × ubuntu/windows); `README.md` is English-first
+(full Russian guide moved to `README.ru.md`); all 8 satellite packages are packed from the solution.
+
+### XL wave: temporal, dashboard, sagas (docs d/03.1, 03.13, 03.15)
 - Temporal tables (03.1): `[Temporal]`, `TemporalRecord` (ticks-based SCD Type 2 —
   range predicates translate on SQLite), `TemporalSaveChangesInterceptor`
   (same-transaction close + Added key-patch mirroring ChangeLog),
@@ -21,7 +50,7 @@
 - Fixes found by tests: ChangeTracker enumeration guard in temporal collect;
   (pre-existing) suite-wide `ManyServiceProvidersCreatedWarning` tripwire
 
-## Unreleased — audit P3 wave (docs d/03: RLS, budget, expand-contract, OTel)
+### Audit P3 wave (docs d/03: RLS, budget, expand-contract, OTel)
 - Row-level security (03.2): `ApplyRowLevelSecurity(ctx, (ctx, e) => ...)` (executing-context
   substitution — nothing baked into query plans), `WithRowLevelSecurity` write guard,
   `ElevatedSession` (audited, `ef.rls.elevated`), `RowLevelSecurityException`
@@ -37,7 +66,7 @@
 - Core dependency audit (09.4): runtime closure is EF Core + Microsoft.Extensions.*
   + System.IO.Hashing only — messaging/cache/OTel stay in satellite packages
 
-## Unreleased — audit P2/P3 enterprise wave (docs d/03, 05.6)
+### Audit P2/P3 enterprise wave (docs d/03, 05.6)
 - Domain events: `DispatchFailurePolicy Throw/Log/RouteToOutbox` (05.6) — post-commit
   failures are logged, swallowed, or persisted as outbox rows (durable at-least-once
   without domain-code changes); `WithDomainEvents` overload + `ef.domainevents.*` metrics;
@@ -62,7 +91,7 @@
 - Tests: 111 → 125 (`AuditP2FixesTests`: policies, health, GDPR, field-auth, catalog,
   N+1 traces, drift, MassTransit roundtrip)
 
-## Unreleased — audit P1 fixes (docs d/10.3, second wave)
+### Audit P1 fixes (docs d/10.3, second wave)
 - Outbox: `DispatchingOutboxMessageHandler` + `IOutboxEventHandler<T>` + `IOutboxTypeResolver`
   (typed routing instead of hand-written dispatcher, 05.5) with source-gen-friendly
   deserializer hook and `AddOutboxDispatcher` DI helper
@@ -97,7 +126,7 @@
   CodeQL workflow, coverage artifact in CI, SBOM step + Testing pack in publish
 - Tests: 91 → 111 (`AuditP1FixesTests` + order-contract/reentrancy `ArchitectureTests`)
 
-## Unreleased — audit P0 fixes (docs d/05–07, 10.3)
+### Audit P0 fixes (docs d/05–07, 10.3)
 - Outbox: `ClaimToken Guid?` claim instead of timestamp-equality (no cross-instance collisions); claim rewritten provider-safe (SQLite/EF10 cannot translate `DateTimeOffset <` or `||` in bulk ops — the old claim never worked on SQLite)
 - Outbox: real dead-letter queue (`DeadLetteredAtUtc`, `Error`, configurable `maxAttempts`, DLQ excluded from poll) instead of comment-only; backoff with jitter
 - Outbox: adaptive poll (no delay on full batch, exponential idle backoff up to 8x), `ef.outbox.*` metrics (`claimed/delivered/failed/dead_lettered/batch.duration/lag`) + `ActivitySource("EfCore.Interceptors.Outbox")` span per message
@@ -107,6 +136,15 @@
 - Encryption: `IPropertyValueEncryptor` AAD overloads fail closed (`NotSupportedException` by default) instead of silently dropping AAD; `AesGcmPropertyValueEncryptor(ReadOnlySpan<byte>)` ctor so keys avoid immutable `string` heap exposure
 - Process: `SECURITY.md`, `.github/dependabot.yml`
 - Tests: 80 → 91 (`AuditP0FixesTests`: outbox DLQ/claim, bulk-encrypted roundtrip + guards, cache bypass/hit/copy, encryption contracts)
+
+### Release hardening (CI matrix C-1, first matrix catch)
+- Tests are dual-targeted (`net8.0;net10.0`) and CI runs `net8.0`/`net10.0` × ubuntu/windows
+- Fixed `ExecuteEncryptedUpdate(All)Async` on the net8.0 target: EF8's `SetProperty` takes
+  `Func<>` and its translator rejects closure-captured compiled delegates
+  (`InvalidCastException` in `TranslateExecuteUpdate`) — the setters lambda is now built
+  as an expression tree with inline selectors (`BulkExtensions.BuildBulkSetters`)
+- `EfCore.Interceptors.MediatR` is dual-targeted; solution-wide `dotnet pack` publishes
+  all 8 packages (MediatR was missing from publish); `dotnet format whitespace` enforced in CI
 
 ## 1.0.5 — 2026-09-01
 - Bulk guard `BulkOperationGuardInterceptor` + `WithBulkOperationGuard` + `BulkExtensions.ExecuteSoftDeleteAsync/ExecuteAuditedUpdateAsync` + Roslyn `EFI1001-EFI1005` (docs/bulk-operations-gap)

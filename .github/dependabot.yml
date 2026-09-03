@@ -11,3 +11,7 @@ updates:
       entity-framework:
         patterns:
           - "Microsoft.EntityFrameworkCore*"
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"

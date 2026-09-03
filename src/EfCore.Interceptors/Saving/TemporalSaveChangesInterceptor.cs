@@ -115,8 +115,13 @@ public class TemporalSaveChangesInterceptor(
                 // Tombstone: valid for a single instant so AsOf(t) finds nothing afterwards.
                 context.Set<TemporalRecord>().Add(new TemporalRecord
                 {
-                    EntityName = entityName, EntityKey = key, SnapshotJson = snapshot,
-                    TicksFrom = ticks, TicksTo = ticks, Action = "Deleted", Actor = actor
+                    EntityName = entityName,
+                    EntityKey = key,
+                    SnapshotJson = snapshot,
+                    TicksFrom = ticks,
+                    TicksTo = ticks,
+                    Action = "Deleted",
+                    Actor = actor
                 });
                 continue;
             }
@@ -126,9 +131,13 @@ public class TemporalSaveChangesInterceptor(
 
             var record = new TemporalRecord
             {
-                EntityName = entityName, EntityKey = key, SnapshotJson = snapshot,
-                TicksFrom = ticks, TicksTo = null,
-                Action = entry.State.ToString(), Actor = actor
+                EntityName = entityName,
+                EntityKey = key,
+                SnapshotJson = snapshot,
+                TicksFrom = ticks,
+                TicksTo = null,
+                Action = entry.State.ToString(),
+                Actor = actor
             };
             context.Set<TemporalRecord>().Add(record);
             if (entry.State == EntityState.Added)

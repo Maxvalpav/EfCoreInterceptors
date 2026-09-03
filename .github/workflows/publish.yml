@@ -27,19 +27,8 @@ jobs:
       - name: Test
         run: dotnet test EfCoreInterceptors.slnx --no-build -c Release
 
-      - name: Pack
-        run: dotnet pack src/EfCore.Interceptors/EfCore.Interceptors.csproj -c Release -o artifacts
-
-      - name: Pack Testing
-        run: dotnet pack src/EfCore.Interceptors.Testing/EfCore.Interceptors.Testing.csproj -c Release -o artifacts
-
-      - name: Pack satellite packages
-        run: >
-          dotnet pack src/EfCore.Interceptors.HealthChecks/EfCore.Interceptors.HealthChecks.csproj -c Release -o artifacts &&
-          dotnet pack src/EfCore.Interceptors.Caching.Redis/EfCore.Interceptors.Caching.Redis.csproj -c Release -o artifacts &&
-          dotnet pack src/EfCore.Interceptors.MassTransit/EfCore.Interceptors.MassTransit.csproj -c Release -o artifacts &&
-          dotnet pack src/EfCore.Interceptors.OpenTelemetry/EfCore.Interceptors.OpenTelemetry.csproj -c Release -o artifacts &&
-          dotnet pack src/EfCore.Interceptors.Dashboard/EfCore.Interceptors.Dashboard.csproj -c Release -o artifacts
+      - name: Pack (all packable projects in solution)
+        run: dotnet pack EfCoreInterceptors.slnx -c Release -o artifacts
 
       - name: List artifacts
         run: ls -lah artifacts/

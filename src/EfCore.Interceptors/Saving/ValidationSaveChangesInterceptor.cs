@@ -31,10 +31,10 @@ public class ValidationSaveChangesInterceptor : SaveChangesInterceptor, IOrdered
         return base.SavingChangesAsync(eventData, result, cancellationToken);
     }
 
-    public override int SavedChanges(SaveChangesCompletedEventData e, int result){ if(e.Context!=null) ChangeTrackerSnapshot.End(e.Context); return base.SavedChanges(e,result); }
-    public override ValueTask<int> SavedChangesAsync(SaveChangesCompletedEventData e, int result, CancellationToken ct=default){ if(e.Context!=null) ChangeTrackerSnapshot.End(e.Context); return base.SavedChangesAsync(e,result,ct); }
-    public override void SaveChangesFailed(DbContextErrorEventData e){ if(e.Context!=null) ChangeTrackerSnapshot.End(e.Context); base.SaveChangesFailed(e); }
-    public override Task SaveChangesFailedAsync(DbContextErrorEventData e, CancellationToken ct=default){ if(e.Context!=null) ChangeTrackerSnapshot.End(e.Context); return base.SaveChangesFailedAsync(e,ct); }
+    public override int SavedChanges(SaveChangesCompletedEventData e, int result) { if (e.Context != null) ChangeTrackerSnapshot.End(e.Context); return base.SavedChanges(e, result); }
+    public override ValueTask<int> SavedChangesAsync(SaveChangesCompletedEventData e, int result, CancellationToken ct = default) { if (e.Context != null) ChangeTrackerSnapshot.End(e.Context); return base.SavedChangesAsync(e, result, ct); }
+    public override void SaveChangesFailed(DbContextErrorEventData e) { if (e.Context != null) ChangeTrackerSnapshot.End(e.Context); base.SaveChangesFailed(e); }
+    public override Task SaveChangesFailedAsync(DbContextErrorEventData e, CancellationToken ct = default) { if (e.Context != null) ChangeTrackerSnapshot.End(e.Context); return base.SaveChangesFailedAsync(e, ct); }
 
     protected virtual void Validate(DbContext? context)
     {
@@ -52,7 +52,7 @@ public class ValidationSaveChangesInterceptor : SaveChangesInterceptor, IOrdered
                 if (nav.TargetEntry != null) ValidateEntry(nav.TargetEntry, failures);
         }
 
-        void ValidateEntry(EntityEntry e, Dictionary<string,string[]> dict)
+        void ValidateEntry(EntityEntry e, Dictionary<string, string[]> dict)
         {
             var validationContext = new ValidationContext(e.Entity);
             var results = new List<ValidationResult>();
@@ -67,7 +67,7 @@ public class ValidationSaveChangesInterceptor : SaveChangesInterceptor, IOrdered
             }
         }
 
-        void ValidateComplex(ComplexPropertyEntry c, Dictionary<string,string[]> dict)
+        void ValidateComplex(ComplexPropertyEntry c, Dictionary<string, string[]> dict)
         {
             if (c.ComplexProperties.Any())
                 foreach (var n in c.ComplexProperties) ValidateComplex(n, dict);

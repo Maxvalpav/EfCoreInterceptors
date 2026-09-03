@@ -92,7 +92,9 @@ public class AuditP0OutboxTests
         {
             seed.OutboxMessages.Add(new OutboxMessage
             {
-                Type = "ok", PayloadJson = "{}", OccurredAtUtc = DateTimeOffset.UtcNow,
+                Type = "ok",
+                PayloadJson = "{}",
+                OccurredAtUtc = DateTimeOffset.UtcNow,
             });
             seed.SaveChanges();
         }

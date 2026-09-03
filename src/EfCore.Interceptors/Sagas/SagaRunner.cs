@@ -60,8 +60,11 @@ public static class SagaRunner
         {
             instance = new SagaInstance
             {
-                Id = sagaId, SagaType = definition.Type,
-                StepIndex = 0, State = SagaState.InProgress, UpdatedAtUtc = time.GetUtcNow()
+                Id = sagaId,
+                SagaType = definition.Type,
+                StepIndex = 0,
+                State = SagaState.InProgress,
+                UpdatedAtUtc = time.GetUtcNow()
             };
             db.Set<SagaInstance>().Add(instance);
             await db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);

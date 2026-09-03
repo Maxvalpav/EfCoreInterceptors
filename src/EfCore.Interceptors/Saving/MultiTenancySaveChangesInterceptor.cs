@@ -32,10 +32,10 @@ public class MultiTenancySaveChangesInterceptor(ITenantProvider tenantProvider) 
         return base.SavingChangesAsync(eventData, result, cancellationToken);
     }
 
-    public override int SavedChanges(SaveChangesCompletedEventData e, int r){ if(e.Context!=null) ChangeTrackerSnapshot.End(e.Context); return base.SavedChanges(e,r); }
-    public override ValueTask<int> SavedChangesAsync(SaveChangesCompletedEventData e, int r, CancellationToken ct=default){ if(e.Context!=null) ChangeTrackerSnapshot.End(e.Context); return base.SavedChangesAsync(e,r,ct); }
-    public override void SaveChangesFailed(DbContextErrorEventData e){ if(e.Context!=null) ChangeTrackerSnapshot.End(e.Context); base.SaveChangesFailed(e); }
-    public override Task SaveChangesFailedAsync(DbContextErrorEventData e, CancellationToken ct=default){ if(e.Context!=null) ChangeTrackerSnapshot.End(e.Context); return base.SaveChangesFailedAsync(e,ct); }
+    public override int SavedChanges(SaveChangesCompletedEventData e, int r) { if (e.Context != null) ChangeTrackerSnapshot.End(e.Context); return base.SavedChanges(e, r); }
+    public override ValueTask<int> SavedChangesAsync(SaveChangesCompletedEventData e, int r, CancellationToken ct = default) { if (e.Context != null) ChangeTrackerSnapshot.End(e.Context); return base.SavedChangesAsync(e, r, ct); }
+    public override void SaveChangesFailed(DbContextErrorEventData e) { if (e.Context != null) ChangeTrackerSnapshot.End(e.Context); base.SaveChangesFailed(e); }
+    public override Task SaveChangesFailedAsync(DbContextErrorEventData e, CancellationToken ct = default) { if (e.Context != null) ChangeTrackerSnapshot.End(e.Context); return base.SaveChangesFailedAsync(e, ct); }
 
     protected virtual void ApplyTenantRules(DbContext? context)
     {

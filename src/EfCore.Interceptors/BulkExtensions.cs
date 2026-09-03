@@ -90,8 +90,10 @@ public static class BulkExtensions
 #if NET10_0_OR_GREATER
         return query.ExecuteUpdateAsync(s => { s.SetProperty(property, cipher); }, ct);
 #else
-        var compiled = property.Compile();
-        return query.ExecuteUpdateAsync(s => s.SetProperty(compiled, cipher), ct);
+        // EF8 (net8.0 target): SetProperty takes Func<>, and the query translator only
+        // accepts an inline lambda node — a closure-captured compiled delegate throws
+        // InvalidCastException inside TranslateExecuteUpdate (matrix C-1). Build the tree manually.
+        return query.ExecuteUpdateAsync(BuildBulkSetters<T>((property, cipher)), ct);
 #endif
     }
 
@@ -106,7 +108,7 @@ public static class BulkExtensions
 #if NET10_0_OR_GREATER
         return query.ExecuteUpdate(s => { s.SetProperty(property, cipher); });
 #else
-        return query.ExecuteUpdate(s => s.SetProperty(property.Compile(), cipher));
+        return query.ExecuteUpdate(BuildBulkSetters<T>((property, cipher)));
 #endif
     }
 
@@ -129,13 +131,55 @@ public static class BulkExtensions
 #if NET10_0_OR_GREATER
         return query.ExecuteUpdateAsync(s => { s.SetProperty(property, cipher); s.SetProperty(e => e.UpdatedAtUtc, now); s.SetProperty(e => e.UpdatedBy, user); }, ct);
 #else
-        var compiledAudited = property.Compile();
-        return query.ExecuteUpdateAsync(s => s
-            .SetProperty(compiledAudited, cipher)
-            .SetProperty(e => e.UpdatedAtUtc, now)
-            .SetProperty(e => e.UpdatedBy, user), ct);
+        Expression<Func<T, DateTimeOffset?>> updatedAt = e => e.UpdatedAtUtc;
+        Expression<Func<T, string?>> updatedBy = e => e.UpdatedBy;
+        return query.ExecuteUpdateAsync(BuildBulkSetters<T>(
+            (property, cipher),
+            (updatedAt, now),
+            (updatedBy, user)), ct);
 #endif
     }
+
+#if !NET10_0_OR_GREATER
+    /// <summary>
+    /// Builds <c>s =&gt; s.SetProperty(...).SetProperty(...)</c> as an expression tree with
+    /// inline property-selector lambdas. Required on the net8.0 target: EF8's
+    /// <c>SetPropertyCalls.SetProperty</c> takes <c>Func&lt;&gt;</c> and its query translator
+    /// rejects closure-captured delegates (InvalidCastException in TranslateExecuteUpdate).
+    /// Selectors must be simple member accesses (same contract as <c>EncryptBulkValue</c>).
+    /// </summary>
+    private static Expression<Func<SetPropertyCalls<T>, SetPropertyCalls<T>>> BuildBulkSetters<T>(
+        params (LambdaExpression Selector, object? Value)[] setters) where T : class
+    {
+        var callsParam = Expression.Parameter(typeof(SetPropertyCalls<T>), "s");
+        var setValueMethod = typeof(SetPropertyCalls<T>)
+            .GetMethods(BindingFlags.Public | BindingFlags.Instance)
+            .Single(m => m.Name == nameof(SetPropertyCalls<T>.SetProperty)
+                && m.IsGenericMethodDefinition
+                && m.GetParameters().Length == 2
+                && m.GetParameters()[1].ParameterType.IsGenericParameter); // (Func, TProperty) overload, not (Func, Func)
+        Expression current = callsParam;
+        foreach (var (selector, value) in setters)
+        {
+            if (selector.Body is not MemberExpression access)
+                throw new ArgumentException("Property selector must be a simple member access.", nameof(setters));
+            var propertyType = selector.ReturnType;
+            var entityParam = Expression.Parameter(typeof(T), "e");
+            // Rebind to typeof(T) so interface-map properties resolve to the entity property.
+            var pi = typeof(T).GetProperty(access.Member.Name, BindingFlags.Public | BindingFlags.Instance)
+                ?? throw new InvalidOperationException($"Property '{typeof(T).Name}.{access.Member.Name}' not found.");
+            var body = Expression.MakeMemberAccess(entityParam, pi);
+            var inlineSelector = Expression.Lambda(
+                typeof(Func<,>).MakeGenericType(typeof(T), propertyType), body, entityParam);
+            current = Expression.Call(
+                current,
+                setValueMethod.MakeGenericMethod(propertyType),
+                inlineSelector,
+                Expression.Constant(value, propertyType));
+        }
+        return Expression.Lambda<Func<SetPropertyCalls<T>, SetPropertyCalls<T>>>(current, callsParam);
+    }
+#endif
 
     private static string? EncryptBulkValue<T>(
         Expression<Func<T, string?>> property,
