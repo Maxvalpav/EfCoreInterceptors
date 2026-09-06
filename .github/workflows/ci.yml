@@ -45,7 +45,7 @@ jobs:
         run: dotnet test tests/EfCore.Interceptors.Tests/EfCore.Interceptors.Tests.csproj --no-build -c Release -f ${{ matrix.tfm }} --filter 'Category!=Integration' --collect:"XPlat Code Coverage" --results-directory coverage/${{ matrix.os }}-${{ matrix.tfm }}
 
       - name: Upload coverage artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: coverage-${{ matrix.os }}-${{ matrix.tfm }}
           path: coverage/
@@ -125,7 +125,7 @@ jobs:
       - name: List packages
         run: ls -lah artifacts/
       - name: Upload package artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: nuget
           path: artifacts/*.nupkg
