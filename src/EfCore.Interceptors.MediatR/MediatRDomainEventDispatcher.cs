@@ -21,6 +21,11 @@ public sealed class DomainEventNotification<TDomainEvent>(TDomainEvent domainEve
 /// <c>INotificationHandler&lt;DomainEventNotification&lt;TEvent&gt;&gt;</c> handlers
 /// (and pipeline behaviors) receive it.
 /// </summary>
+/// <remarks>
+/// The sync <see cref="Dispatch"/> blocks on the async pipeline
+/// (<c>GetAwaiter().GetResult()</c>). Under ASP.NET Core load prefer
+/// <c>SaveChangesAsync()</c> so <c>DispatchAsync</c> is used instead.
+/// </remarks>
 public sealed class MediatRDomainEventDispatcher(IMediator mediator) : IDomainEventDispatcher
 {
     private readonly IMediator _mediator = mediator;

@@ -18,6 +18,19 @@ namespace EfCore.Interceptors.Commands;
 /// Entries expire after the configured TTL. Caching is skipped inside explicit transactions by
 /// default to avoid dirty reads.
 /// </summary>
+/// <remarks>
+/// Cache safety: a cached result is correct only if everything that affects the rows is part of
+/// the cache key (SQL text + parameter values + connection identity + <see cref="IQueryCacheKeyContributor"/> parts).
+/// Non-parameterized influences — SQL Server RLS policies / CONTEXT_INFO, PostgreSQL
+/// <c>current_setting('app.tenant')</c>, session state set via <c>WithSessionInit</c> — are invisible
+/// to the key. For shared-database multi-tenancy register a tenant contributor (done automatically
+/// by <c>WithMultiTenancy</c> in <c>BuildInto</c>); for session-dependent queries disable caching
+/// for those queries instead of relying on the global cache.
+/// Neighboring <c>DbCommandInterceptor</c>s (slow-query, metrics, logging) still observe the real
+/// database round-trip: the fetch happens synchronously inside <c>ReaderExecuting</c>, so their
+/// <c>ReaderExecuted</c> events carry the true duration. Register caching last so logging/metrics
+/// <c>ReaderExecuting</c> hooks run before the suppress.
+/// </remarks>
 public class CachingCommandInterceptor : DbCommandInterceptor, Microsoft.EntityFrameworkCore.Diagnostics.IDbTransactionInterceptor
 {
     private readonly IQueryCacheStore _store;
@@ -27,19 +40,27 @@ public class CachingCommandInterceptor : DbCommandInterceptor, Microsoft.EntityF
     private readonly int _maxRowsPerEntry;
     private readonly long _maxBytesPerEntry;
     private readonly int _maxEntries;
+    // Key contributors (tenant id, session state, ...) appended to the cache key.
+    private readonly List<IQueryCacheKeyContributor> _contributors = [];
     // Table dependencies for targeted invalidation (06.4): cache key -> tables the
     // query read, plus a per-table generation counter bumped on every write.
     private readonly ConcurrentDictionary<string, string[]> _keyTables = new(StringComparer.Ordinal);
+    // Cache key -> raw SQL text (for fragment invalidation over the SQL part only,
+    // so a fragment never matches parameter values embedded in the key).
+    private readonly ConcurrentDictionary<string, string> _keySql = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string, long> _generations = new(StringComparer.OrdinalIgnoreCase);
     // Single-flight gates against thundering herd (06.1): concurrent misses for the
     // same key coalesce onto one DB round-trip; losers re-check the cache after.
     private readonly ConcurrentDictionary<string, SemaphoreSlim> _gates = new();
+    // Async single-flight: concurrent awaiters share one fetch task; removed only when
+    // it is our own lazy (pair-remove), so a newer in-flight fetch is never cancelled.
+    private readonly ConcurrentDictionary<string, Lazy<Task<CachedQueryResult>>> _inflight = new();
     private readonly System.Runtime.CompilerServices.ConditionalWeakTable<System.Data.Common.DbTransaction, HashSet<string>> _pendingTx = new();
 
     public CachingCommandInterceptor(
         TimeSpan? timeToLive = null,
         bool skipInsideTransactions = true,
-        bool invalidateOnWrites = false,
+        bool invalidateOnWrites = true,
         int maxEntries = 1000,
         IQueryCacheStore? store = null,
         int maxRowsPerEntry = 10_000,
@@ -54,6 +75,25 @@ public class CachingCommandInterceptor : DbCommandInterceptor, Microsoft.EntityF
         _store = store ?? new MemoryQueryCacheStore(_timeToLive, maxEntries);
     }
 
+    /// <summary>Options-object construction (no positional boolean trap).</summary>
+    public CachingCommandInterceptor(CachingOptions options)
+        : this(options.TimeToLive, options.SkipInsideTransactions, options.InvalidateOnWrites,
+            options.MaxEntries, options.Store, options.MaxRowsPerEntry, options.MaxBytesPerEntry)
+    {
+        foreach (var c in options.KeyContributors) AddContributor(c);
+    }
+
+    /// <summary>Registers a cache-key contributor (tenant id, session version, ...). Same runtime type replaces the previous one.</summary>
+    public void AddContributor(IQueryCacheKeyContributor contributor)
+    {
+        ArgumentNullException.ThrowIfNull(contributor);
+        lock (_contributors)
+        {
+            _contributors.RemoveAll(c => c.GetType() == contributor.GetType());
+            _contributors.Add(contributor);
+        }
+    }
+
     /// <summary>Number of currently cached query results.</summary>
     public int Count => _store.Count;
 
@@ -62,15 +102,46 @@ public class CachingCommandInterceptor : DbCommandInterceptor, Microsoft.EntityF
     {
         _store.Clear();
         _keyTables.Clear();
+        _keySql.Clear();
     }
     public static void Clear(Microsoft.EntityFrameworkCore.DbContext context) { /* global cache — per-context clear no-op; pool does not leak per-context state */ }
 
-    /// <summary>Drops cached results whose SQL contains the given fragment (e.g. a table name).</summary>
+    /// <summary>
+    /// Drops cached results whose SQL contains the given fragment (e.g. a table name).
+    /// Matching runs over parsed read-tables and the SQL text — never over parameter values
+    /// embedded in the key, so <c>Invalidate("Order")</c> won't evict a query with
+    /// <c>@p0 = 'Order confirmed'</c>. Prefer <see cref="InvalidateTable"/> for table eviction.
+    /// Best-effort for very old entries whose SQL was trimmed from diagnostics (they still
+    /// expire via TTL and are evicted by table-targeted invalidation).
+    /// </summary>
     public void Invalidate(string sqlFragment)
     {
-        _store.Invalidate(sqlFragment);
-        foreach (var k in _keyTables.Keys.Where(k => k.Contains(sqlFragment, StringComparison.OrdinalIgnoreCase)).ToList())
-            _keyTables.TryRemove(k, out _);
+        if (string.IsNullOrWhiteSpace(sqlFragment)) return;
+        // Prefer targeted table invalidation: _keyTables holds parsed read-tables per key,
+        // so 'Order' won't match a parameter value like 'Order confirmed' stored in the key.
+        foreach (var kv in _keyTables)
+        {
+            if (kv.Value.Any(t => string.Equals(t, sqlFragment, StringComparison.OrdinalIgnoreCase)
+                || t.Contains(sqlFragment, StringComparison.OrdinalIgnoreCase)))
+            {
+                EvictKey(kv.Key);
+            }
+        }
+        // Then SQL-text matching (still not parameter values).
+        foreach (var kv in _keySql)
+        {
+            if (kv.Value.Contains(sqlFragment, StringComparison.OrdinalIgnoreCase))
+            {
+                EvictKey(kv.Key);
+            }
+        }
+    }
+
+    private void EvictKey(string key)
+    {
+        _store.Invalidate(key); // exact-key eviction via store scan
+        _keyTables.TryRemove(key, out _);
+        _keySql.TryRemove(key, out _);
     }
 
     /// <summary>
@@ -100,8 +171,7 @@ public class CachingCommandInterceptor : DbCommandInterceptor, Microsoft.EntityF
         {
             if (kv.Value.Any(t => set.Contains(t)))
             {
-                _store.Invalidate(kv.Key); // exact-key eviction via store scan
-                _keyTables.TryRemove(kv.Key, out _);
+                EvictKey(kv.Key);
             }
         }
         TrimKeyTables();
@@ -109,11 +179,11 @@ public class CachingCommandInterceptor : DbCommandInterceptor, Microsoft.EntityF
 
     private void TrimKeyTables()
     {
-        // _keyTables must not outgrow the store (entries evicted by TTL/SizeLimit
-        // inside the store do not notify us): bound it loosely.
+        // _keyTables/_keySql must not outgrow the store (entries evicted by TTL/SizeLimit
+        // inside the store do not notify us): bound them loosely.
         if (_keyTables.Count <= 4 * _maxEntries) return;
         foreach (var k in _keyTables.Keys.Take(_keyTables.Count - 4 * _maxEntries).ToList())
-            _keyTables.TryRemove(k, out _);
+            EvictKey(k);
     }
 
     public override InterceptionResult<DbDataReader> ReaderExecuting(
@@ -124,13 +194,14 @@ public class CachingCommandInterceptor : DbCommandInterceptor, Microsoft.EntityF
             return base.ReaderExecuting(command, eventData, result);
         }
 
-        var key = BuildKey(command);
+        var key = BuildKey(command, eventData);
         if (TryGet(key, out var cached))
         {
             return InterceptionResult<DbDataReader>.SuppressWithResult(new CachedDataReader(cached));
         }
 
         // Single-flight (06.1): only one thread fetches; the rest wait and re-check.
+        // TryRemove(pair) removes only our own gate, so a newer gate for the same key is never deleted.
         var gate = _gates.GetOrAdd(key, _ => new SemaphoreSlim(1, 1));
         gate.Wait();
         try
@@ -145,12 +216,12 @@ public class CachingCommandInterceptor : DbCommandInterceptor, Microsoft.EntityF
                 // Buffer always captures the rows for serving; the entry is stored
                 // only when it fits the size limits (06.2) and has a single result set.
                 var (snapshot, cacheable, rejectReason) = Buffer(reader);
-                if (cacheable) AddOrEvict(key, snapshot, ParseReadTables(command.CommandText));
+                if (cacheable) AddOrEvict(key, snapshot, ParseReadTables(command.CommandText), command.CommandText);
                 else Bypass(key, rejectReason);
                 return InterceptionResult<DbDataReader>.SuppressWithResult(new CachedDataReader(snapshot));
             }
         }
-        finally { gate.Release(); _gates.TryRemove(key, out _); }
+        finally { gate.Release(); _gates.TryRemove(new System.Collections.Generic.KeyValuePair<string, SemaphoreSlim>(key, gate)); }
     }
 
     public override async ValueTask<InterceptionResult<DbDataReader>> ReaderExecutingAsync(
@@ -159,33 +230,37 @@ public class CachingCommandInterceptor : DbCommandInterceptor, Microsoft.EntityF
     {
         if (!Cacheable(eventData, command))
         {
-            return await base.ReaderExecutingAsync(command, eventData, result, cancellationToken);
+            return await base.ReaderExecutingAsync(command, eventData, result, cancellationToken).ConfigureAwait(false);
         }
 
-        var key = BuildKey(command);
+        var key = BuildKey(command, eventData);
         if (TryGet(key, out var cached))
         {
             return InterceptionResult<DbDataReader>.SuppressWithResult(new CachedDataReader(cached));
         }
 
-        var gate = _gates.GetOrAdd(key, _ => new SemaphoreSlim(1, 1));
-        await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        // Async single-flight via Lazy<Task>: concurrent misses share one fetch task.
+        // Pair-remove drops only our own lazy, so a newer in-flight fetch survives.
+        var lazy = _inflight.GetOrAdd(key, k => new Lazy<Task<CachedQueryResult>>(
+            () => FetchAndBufferAsync(command, k, cancellationToken)));
         try
         {
-            if (TryGet(key, out cached))
-            {
-                return InterceptionResult<DbDataReader>.SuppressWithResult(new CachedDataReader(cached));
-            }
-
-            await using (var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false))
-            {
-                var (snapshot, cacheable, rejectReason) = await BufferAsync(reader, cancellationToken).ConfigureAwait(false);
-                if (cacheable) AddOrEvict(key, snapshot, ParseReadTables(command.CommandText));
-                else Bypass(key, rejectReason);
-                return InterceptionResult<DbDataReader>.SuppressWithResult(new CachedDataReader(snapshot));
-            }
+            var snapshot = await lazy.Value.ConfigureAwait(false);
+            return InterceptionResult<DbDataReader>.SuppressWithResult(new CachedDataReader(snapshot));
         }
-        finally { gate.Release(); _gates.TryRemove(key, out _); }
+        finally { _inflight.TryRemove(new System.Collections.Generic.KeyValuePair<string, Lazy<Task<CachedQueryResult>>>(key, lazy)); }
+    }
+
+    /// <summary>Executes the command, buffers the rows and populates the cache (single-flight worker).</summary>
+    private async Task<CachedQueryResult> FetchAndBufferAsync(DbCommand command, string key, CancellationToken ct)
+    {
+        await using (var reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false))
+        {
+            var (snapshot, cacheable, rejectReason) = await BufferAsync(reader, ct).ConfigureAwait(false);
+            if (cacheable) AddOrEvict(key, snapshot, ParseReadTables(command.CommandText), command.CommandText);
+            else Bypass(key, rejectReason);
+            return snapshot;
+        }
     }
 
     /// <summary>
@@ -261,34 +336,36 @@ public class CachingCommandInterceptor : DbCommandInterceptor, Microsoft.EntityF
         }
     }
 
-    public ValueTask TransactionCommittedAsync(System.Data.Common.DbTransaction transaction, TransactionEndEventData eventData, CancellationToken cancellationToken = default)
+    // NOTE: Task (not ValueTask) — must match IDbTransactionInterceptor exactly, otherwise
+    // commit/rollback invalidation silently goes dead on the async path.
+    public Task TransactionCommittedAsync(System.Data.Common.DbTransaction transaction, TransactionEndEventData eventData, CancellationToken cancellationToken = default)
     {
         if (_pendingTx.TryGetValue(transaction, out var tables))
         {
             _pendingTx.Remove(transaction);
             InvalidateTables(tables);
         }
-        return default;
+        return Task.CompletedTask;
     }
 
     public void TransactionRolledBack(System.Data.Common.DbTransaction transaction, TransactionEndEventData eventData) => _pendingTx.Remove(transaction);
-    public ValueTask TransactionRolledBackAsync(System.Data.Common.DbTransaction transaction, TransactionEndEventData eventData, CancellationToken cancellationToken = default)
+    public Task TransactionRolledBackAsync(System.Data.Common.DbTransaction transaction, TransactionEndEventData eventData, CancellationToken cancellationToken = default)
     {
         _pendingTx.Remove(transaction);
-        return default;
+        return Task.CompletedTask;
     }
 
-    private void AddOrEvict(string key, CachedQueryResult snapshot, string[] tables)
+    private void AddOrEvict(string key, CachedQueryResult snapshot, string[] tables, string? sql = null)
     {
         _store.Set(key, snapshot, _timeToLive);
         _keyTables[key] = tables;
+        if (sql is not null) _keySql[key] = sql;
         TrimKeyTables();
     }
 
     private bool Cacheable(CommandEventData eventData, DbCommand command)
         => IsSelect(command.CommandText)
-           && (!_skipInsideTransactions || eventData.Context?.Database.CurrentTransaction is null)
-           && command.Transaction is null;
+           && (!_skipInsideTransactions || (eventData.Context?.Database.CurrentTransaction is null && command.Transaction is null));
 
     private static readonly System.Text.RegularExpressions.Regex ReadTablesRegex = new(
         @"\b(?:FROM|JOIN)\s+(?:\""[^\""]+\""|[\w\.\[\]""]+)",
@@ -349,14 +426,70 @@ public class CachingCommandInterceptor : DbCommandInterceptor, Microsoft.EntityF
 
     private static string StripComments(string sql)
     {
-        // Remove /* */ blocks then -- line comments (best-effort for table parsing).
-        var noBlocks = System.Text.RegularExpressions.Regex.Replace(sql, @"/\*.*?\*/", " ",
-            System.Text.RegularExpressions.RegexOptions.Singleline, TimeSpan.FromMilliseconds(100));
-        var sb = new System.Text.StringBuilder(noBlocks.Length);
-        foreach (var line in noBlocks.Split('\n'))
+        // Literal-aware comment stripper: '--' and '/* */' inside '...' are string content,
+        // not comments — and table-name keywords inside literals must not parse as tables either,
+        // so single-quoted literal contents are blanked (only '...' — unambiguous literals in every
+        // dialect; "...", `...`, [...] may be identifiers and are preserved as-is).
+        var sb = new System.Text.StringBuilder(sql.Length);
+        var i = 0;
+        char? quote = null; // ', ", `
+        var inBracketIdent = false;
+        while (i < sql.Length)
         {
-            var idx = line.IndexOf("--", StringComparison.Ordinal);
-            sb.Append(idx < 0 ? line : line[..idx]).Append(' ');
+            var c = sql[i];
+            if (quote is not null)
+            {
+                if (c == quote)
+                {
+                    // '' inside '...' is an escaped quote, not the end.
+                    if (quote == '\'' && i + 1 < sql.Length && sql[i + 1] == '\'')
+                    {
+                        if (quote == '\'') sb.Append("  ");
+                        else sb.Append(c).Append(sql[i + 1]);
+                        i += 2;
+                        continue;
+                    }
+                    sb.Append(c);
+                    quote = null;
+                }
+                else if (quote == '\'')
+                {
+                    sb.Append(' '); // blank literal content so keywords inside don't parse
+                }
+                else
+                {
+                    sb.Append(c);
+                }
+                i++;
+                continue;
+            }
+            if (inBracketIdent)
+            {
+                sb.Append(c);
+                if (c == ']') inBracketIdent = false;
+                i++;
+                continue;
+            }
+            if (c == '\'' || c == '"' || c == '`') { quote = c; sb.Append(c); i++; continue; }
+            if (c == '[') { inBracketIdent = true; sb.Append(c); i++; continue; }
+            if (c == '/' && i + 1 < sql.Length && sql[i + 1] == '*')
+            {
+                var end = sql.IndexOf("*/", i + 2, StringComparison.Ordinal);
+                if (end < 0) break; // unterminated block — drop the rest
+                i = end + 2;
+                sb.Append(' ');
+                continue;
+            }
+            if (c == '-' && i + 1 < sql.Length && sql[i + 1] == '-')
+            {
+                var nl = sql.IndexOf('\n', i + 2);
+                if (nl < 0) break; // line comment to end of string
+                i = nl + 1;
+                sb.Append(' ');
+                continue;
+            }
+            sb.Append(c);
+            i++;
         }
         return sb.ToString();
     }
@@ -405,11 +538,13 @@ public class CachingCommandInterceptor : DbCommandInterceptor, Microsoft.EntityF
         {
             result = cached;
             SharedMeter.CacheHits.Add(1);
+            SharedMeter.RecordCacheHit();
             SharedMeter.CacheServeDuration.Record(
                 TimeSpan.FromTicks(Stopwatch.GetElapsedTime(start).Ticks).TotalSeconds);
             return true;
         }
         SharedMeter.CacheMisses.Add(1);
+        SharedMeter.RecordCacheMiss();
         return false;
     }
 
@@ -421,14 +556,40 @@ public class CachingCommandInterceptor : DbCommandInterceptor, Microsoft.EntityF
             new KeyValuePair<string, object?>("reason", reason));
     }
 
-    internal static string BuildKey(DbCommand command)
+    /// <summary>
+    /// Connection string with secret values (Password/Pwd/Token/...) replaced by ***.
+    /// Used for the cache-key hash so rotated passwords don't cold-start the cache and secrets
+    /// never leak into diagnostics. Public for custom key policies.
+    /// </summary>
+    public static string StripSecrets(string connectionString)
+    {
+        try
+        {
+            var b = new DbConnectionStringBuilder { ConnectionString = connectionString };
+            foreach (var k in new[] { "Password", "Pwd", "Token", "AccessToken", "AccountKey", "SharedAccessKey", "ClientSecret" })
+                if (b.ContainsKey(k)) b[k] = "***";
+            return b.ConnectionString;
+        }
+        catch
+        {
+            return connectionString.Length <= 256 ? connectionString : connectionString[..256];
+        }
+    }
+
+    /// <summary>
+    /// Cache key for a command: connection identity (secrets stripped) + SQL + sorted parameter
+    /// values. Public for diagnostics (key-shape inspection, custom invalidation policies).
+    /// Does not include <see cref="IQueryCacheKeyContributor"/> parts — use the instance
+    /// <see cref="BuildKey(DbCommand, CommandEventData?)"/> overload for the effective key.
+    /// </summary>
+    public static string BuildKey(DbCommand command)
     {
         var sb = new System.Text.StringBuilder();
-        // Tenant isolation: include connection string hash (without exposing password in logs)
+        // Tenant isolation: include connection identity hash, but never the password/token itself.
         var cs = command.Connection?.ConnectionString;
         if (!string.IsNullOrEmpty(cs))
         {
-            var csHash = System.IO.Hashing.XxHash3.HashToUInt64(System.Text.Encoding.UTF8.GetBytes(cs));
+            var csHash = System.IO.Hashing.XxHash3.HashToUInt64(System.Text.Encoding.UTF8.GetBytes(StripSecrets(cs)));
             sb.Append($"[cs:{csHash:X16}]|");
         }
         sb.Append(command.CommandText);
@@ -461,6 +622,28 @@ public class CachingCommandInterceptor : DbCommandInterceptor, Microsoft.EntityF
                 }
             }
             sb.Append('|').Append(parameter.ParameterName).Append('=').Append(valStr);
+        }
+        return sb.ToString();
+    }
+
+    /// <summary>
+    /// Effective cache key: <see cref="BuildKey(DbCommand)"/> plus every registered
+    /// <see cref="IQueryCacheKeyContributor"/> part (tenant id, session version, ...).
+    /// Contributors that return null/empty are skipped.
+    /// </summary>
+    public string BuildKey(DbCommand command, CommandEventData? eventData)
+    {
+        var key = BuildKey(command);
+        IQueryCacheKeyContributor[] contributors;
+        lock (_contributors) contributors = [.. _contributors];
+        if (contributors.Length == 0) return key;
+        var sb = new System.Text.StringBuilder(key);
+        foreach (var c in contributors)
+        {
+            string? part = null;
+            try { part = c.Contribute(command, eventData); }
+            catch { part = null; }
+            if (!string.IsNullOrEmpty(part)) sb.Append("|k:").Append(part);
         }
         return sb.ToString();
     }
@@ -554,7 +737,9 @@ public class CachingCommandInterceptor : DbCommandInterceptor, Microsoft.EntityF
 
     private static long EstimateRowBytes(object[] row)
     {
-        long bytes = 0;
+        // Best-effort upper bound: fixed-size primitives at 16 (boxed), strings/bytes measured,
+        // plus ~32 bytes per row for the object[] itself and the List slot.
+        long bytes = 32;
         foreach (var v in row)
         {
             bytes += v switch
@@ -562,6 +747,9 @@ public class CachingCommandInterceptor : DbCommandInterceptor, Microsoft.EntityF
                 null or DBNull => 8,
                 string s => 16 + (long)s.Length * 2,
                 byte[] b => 16 + b.Length,
+                decimal or Guid or DateTime or DateTimeOffset or TimeSpan or DateOnly or TimeOnly => 16,
+                bool or byte or sbyte or char or short or ushort or int or uint or float => 8,
+                long or ulong or double => 8,
                 _ => 24,
             };
         }
@@ -680,7 +868,7 @@ public sealed class CachedDataReader : DbDataReader
     public override long GetInt64(int ordinal) => (long)ConvertValue(GetValue(ordinal), typeof(long))!;
     public override string GetString(int ordinal) => (string)ConvertValue(GetValue(ordinal), typeof(string))!;
 
-    public override System.Collections.IEnumerator GetEnumerator() => _result.Rows.GetEnumerator();
+    public override System.Collections.IEnumerator GetEnumerator() => new DbEnumerator(this, closeReader: false);
     public override bool NextResult() => false;
 
     public override long GetBytes(int ordinal, long dataOffset, byte[]? buffer, int bufferOffset, int length)

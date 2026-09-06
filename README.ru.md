@@ -393,7 +393,6 @@ await db.Orders.Where(...).ExecuteSoftDeleteAsync(users, timeProvider, ct);
 await db.Orders.Where(...).ExecuteAuditedUpdateAsync(...);
 await db.Secrets.Where(...).ExecuteEncryptedUpdateAsync(e => e.Value, plain, encryptor, ct);
 ```
-// Подробно: см. раздел «Ограничения bulk-операций» выше.
 
 Roslyn-аналайзеры (внутри core-пакета, EFI1001–EFI1005 bulk-guard'ы + EFI2001/EFI2003 strictness):
 `EFI2001` — `IgnoreQueryFilters()` (обход фильтров), `EFI2003` — `Where()` по `[Encrypted]`-свойству.

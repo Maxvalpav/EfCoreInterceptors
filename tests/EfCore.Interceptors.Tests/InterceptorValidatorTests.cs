@@ -84,11 +84,23 @@ public sealed class InterceptorValidatorTests
     [Fact]
     public void Duplicate_interceptors_warn()
     {
-        var setup = new EfInterceptorsSetup().WithAuditing().WithAuditing();
+        // With* builders deduplicate (AddOrReplace): explicit Add() twice still warns.
+        var setup = new EfInterceptorsSetup()
+            .Add(new Saving.AuditSaveChangesInterceptor())
+            .Add(new Saving.AuditSaveChangesInterceptor());
         using var db = new BareDb(SqliteOptions<BareDb>());
         var issues = setup.Validate(db);
         var warning = Assert.Single(issues, i => i.Code == "EFI2012");
         Assert.Equal(InterceptorValidationSeverity.Warning, warning.Severity);
+    }
+
+    [Fact]
+    public void With_builders_deduplicate()
+    {
+        var setup = new EfInterceptorsSetup().WithAuditing().WithAuditing();
+        using var db = new BareDb(SqliteOptions<BareDb>());
+        var issues = setup.Validate(db);
+        Assert.DoesNotContain(issues, i => i.Code == "EFI2012");
     }
 
     [Fact]

@@ -11,11 +11,21 @@ namespace EfCore.Interceptors.Observability;
 /// <summary>
 /// Delivers one outbox message. Register in DI (scoped is fine — a scope per batch is created).
 /// Throw to leave the message unprocessed; it will be retried on the next poll.
+/// Throw <see cref="PermanentOutboxException"/> for non-transient failures
+/// (poison payload, schema mismatch) — the message is dead-lettered immediately
+/// instead of burning through <c>maxAttempts</c> retries.
 /// </summary>
 public interface IOutboxMessageHandler
 {
     ValueTask HandleAsync(OutboxMessage message, CancellationToken cancellationToken);
 }
+
+/// <summary>
+/// Marks an outbox failure as permanent: the processor dead-letters the message
+/// immediately (audit §2.4 transient/permanent split).
+/// </summary>
+public sealed class PermanentOutboxException(string message, Exception? inner = null)
+    : InvalidOperationException(message, inner);
 
 /// <summary>
 /// Background service that polls the <see cref="OutboxMessage"/> table and delivers pending
@@ -149,6 +159,7 @@ public class OutboxProcessor<TContext>(
             .ToListAsync(cancellationToken).ConfigureAwait(false);
 
         SharedMeter.OutboxClaimed.Add(pending.Count);
+        SharedMeter.InterceptorOutboxPending.Add(pending.Count);
 
         // Lag: age of the oldest message we just claimed (seconds).
         if (pending.Count > 0)
@@ -192,14 +203,17 @@ public class OutboxProcessor<TContext>(
                 {
                     SharedMeter.OutboxDelivered.Add(1,
                         new KeyValuePair<string, object?>("type", message.Type));
+                    SharedMeter.InterceptorOutboxPending.Add(-1);
                     _logger.LogDebug("Outbox message {MessageId} ({Type}) delivered.", message.Id, message.Type);
                 }
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
                 var errorMsg = ex.Message[..Math.Min(1000, ex.Message.Length)];
+                var nowStamp = _timeProvider.GetUtcNow();
+                var permanent = ex is PermanentOutboxException;
 
-                if (message.AttemptCount + 1 >= _maxAttempts)
+                if (permanent || message.AttemptCount + 1 >= _maxAttempts)
                 {
                     // Real dead-letter (05.2): park the poison message so it stops
                     // occupying batch slots and polluting logs.
@@ -207,6 +221,7 @@ public class OutboxProcessor<TContext>(
                         .Where(m => m.Id == message.Id)
                         .ExecuteUpdateAsync(s => s
                             .SetProperty(m => m.DeadLetteredAtUtc, _timeProvider.GetUtcNow())
+                            .SetProperty(m => m.FailedAtUtc, m => m.FailedAtUtc ?? nowStamp)
                             .SetProperty(m => m.Error, errorMsg)
                             .SetProperty(m => m.LockedUntilUtc, (DateTimeOffset?)null)
                             .SetProperty(m => m.ClaimToken, (Guid?)null)
@@ -214,7 +229,10 @@ public class OutboxProcessor<TContext>(
 
                     SharedMeter.OutboxDeadLettered.Add(1,
                         new KeyValuePair<string, object?>("type", message.Type));
-                    _logger.LogError(ex, "Outbox message {MessageId} ({Type}) exceeded max retries ({Max}); dead-lettered.",
+                    SharedMeter.InterceptorOutboxPending.Add(-1);
+                    SharedMeter.InterceptorOutboxDeliveryFailures.Add(1,
+                        new KeyValuePair<string, object?>("type", message.Type));
+                    _logger.LogError(ex, "Outbox message {MessageId} ({Type}) exceeded max retries ({Max}) or failed permanently; dead-lettered.",
                         message.Id, message.Type, _maxAttempts);
                 }
                 else
@@ -229,10 +247,13 @@ public class OutboxProcessor<TContext>(
                         .ExecuteUpdateAsync(s => s
                             .SetProperty(m => m.AttemptCount, m => m.AttemptCount + 1)
                             .SetProperty(m => m.Error, errorMsg)
+                            .SetProperty(m => m.FailedAtUtc, m => m.FailedAtUtc ?? nowStamp)
                             .SetProperty(m => m.ClaimToken, (Guid?)null)
                             .SetProperty(m => m.LockedUntilUtc, nextLockedUntil), cancellationToken).ConfigureAwait(false);
 
                     SharedMeter.OutboxFailed.Add(1,
+                        new KeyValuePair<string, object?>("type", message.Type));
+                    SharedMeter.InterceptorOutboxDeliveryFailures.Add(1,
                         new KeyValuePair<string, object?>("type", message.Type));
                     _logger.LogError(ex,
                         "Outbox message {MessageId} ({Type}) failed; will retry after {Backoff:F0}s (attempt {Attempt}/{Max}).",

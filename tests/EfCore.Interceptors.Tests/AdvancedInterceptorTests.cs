@@ -182,7 +182,9 @@ public class CachingCommandInterceptorTests
         using var database = new SqliteTestDatabase();
 
         // ONE shared interceptor instance so invalidation affects every context using it.
-        var sharedCache = new CachingCommandInterceptor(TimeSpan.FromMinutes(5));
+        // Stale reads are opt-in: invalidateOnWrites=false keeps serving the buffer after
+        // out-of-band mutations (the default true would evict on the raw UPDATE below).
+        var sharedCache = new CachingCommandInterceptor(TimeSpan.FromMinutes(5), invalidateOnWrites: false);
 
         using (var seed = new TestDbContext(database.BuildOptions(
             o => o.UseEfInterceptors(s => s.Add(sharedCache))).Options))

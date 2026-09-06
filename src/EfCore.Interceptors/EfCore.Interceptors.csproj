@@ -43,6 +43,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\EfCore.Interceptors.Analyzers\EfCore.Interceptors.Analyzers.csproj" OutputItemType="Analyzer" ReferenceOutputAssembly="false" />
+    <ProjectReference Include="..\EfCore.Interceptors.Generators\EfCore.Interceptors.Generators.csproj" OutputItemType="Analyzer" ReferenceOutputAssembly="false" />
   </ItemGroup>
 
   <ItemGroup>

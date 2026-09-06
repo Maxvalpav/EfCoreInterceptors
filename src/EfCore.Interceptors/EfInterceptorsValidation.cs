@@ -116,4 +116,33 @@ public static class EfInterceptorsValidator
         }
         return issues;
     }
+
+    /// <summary>
+    /// Lifetime check (audit §3.4): <see cref="ICurrentUserProvider"/> is usually request-scoped,
+    /// while <see cref="ServiceCollectionExtensions.AddEfInterceptors"/> registers interceptors as
+    /// singletons. A scoped provider captured by a singleton leaks the actor across requests
+    /// (or touches a disposed scope). Warns (EFI2020) when a scoped provider meets singleton
+    /// interceptors; fix by registering actor-aware interceptors as scoped instead of via the helper.
+    /// </summary>
+    public static IReadOnlyList<InterceptorValidationIssue> ValidateLifetimes(
+        Microsoft.Extensions.DependencyInjection.IServiceCollection services)
+    {
+        ArgumentNullException.ThrowIfNull(services);
+        var issues = new List<InterceptorValidationIssue>();
+        var provider = services.LastOrDefault(d =>
+            d.ServiceType == typeof(ICurrentUserProvider) || d.ServiceType == typeof(ITenantProvider));
+        var hasSingletonInterceptors = services.Any(d =>
+            d.ServiceType == typeof(IInterceptor) &&
+            d.Lifetime == Microsoft.Extensions.DependencyInjection.ServiceLifetime.Singleton);
+        if (provider is not null &&
+            provider.Lifetime == Microsoft.Extensions.DependencyInjection.ServiceLifetime.Scoped &&
+            hasSingletonInterceptors)
+        {
+            issues.Add(new InterceptorValidationIssue(InterceptorValidationSeverity.Warning, "EFI2020",
+                $"'{provider.ServiceType.Name}' is Scoped but interceptors are Singleton — " +
+                "the singleton will capture the first scope's actor/tenant. Register actor-aware " +
+                "interceptors as Scoped manually instead of AddEfInterceptors, or use a static actor for background jobs."));
+        }
+        return issues;
+    }
 }

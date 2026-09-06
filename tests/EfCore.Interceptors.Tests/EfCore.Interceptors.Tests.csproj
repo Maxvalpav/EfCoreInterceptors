@@ -32,6 +32,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\EfCore.Interceptors\EfCore.Interceptors.csproj" />
+    <ProjectReference Include="..\..\src\EfCore.Interceptors.Generators\EfCore.Interceptors.Generators.csproj" OutputItemType="Analyzer" ReferenceOutputAssembly="false" />
     <ProjectReference Include="..\..\src\EfCore.Interceptors.Dashboard\EfCore.Interceptors.Dashboard.csproj" />
     <ProjectReference Include="..\..\src\EfCore.Interceptors.HealthChecks\EfCore.Interceptors.HealthChecks.csproj" />
     <ProjectReference Include="..\..\src\EfCore.Interceptors.MassTransit\EfCore.Interceptors.MassTransit.csproj" />

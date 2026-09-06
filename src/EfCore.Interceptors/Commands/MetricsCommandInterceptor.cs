@@ -76,6 +76,9 @@ public class MetricsCommandInterceptor : DbCommandInterceptor
     public override void CommandFailed(DbCommand command, CommandErrorEventData eventData)
     {
         _failed.Add(1, new KeyValuePair<string, object?>("operation", eventData.ExecuteMethod.ToString()));
+        Observability.SharedMeter.InterceptorCommandsTotal.Add(1,
+            new KeyValuePair<string, object?>("operation", eventData.ExecuteMethod.ToString()),
+            new KeyValuePair<string, object?>("outcome", "failed"));
         base.CommandFailed(command, eventData);
     }
 
@@ -93,5 +96,9 @@ public class MetricsCommandInterceptor : DbCommandInterceptor
         _durationMs.Record(Math.Max(0.01, eventData.Duration.TotalMilliseconds), tag);
         _durationS.Record(Math.Max(0.00001, eventData.Duration.TotalSeconds), tag);
         _executed.Add(1, tag);
+        Observability.SharedMeter.InterceptorCommandsTotal.Add(1, tag,
+            new KeyValuePair<string, object?>("outcome", "executed"));
+        Observability.SharedMeter.InterceptorCommandDuration.Record(
+            Math.Max(0.00001, eventData.Duration.TotalSeconds), tag);
     }
 }

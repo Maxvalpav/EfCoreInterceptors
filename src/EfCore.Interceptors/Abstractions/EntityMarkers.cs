@@ -26,3 +26,17 @@ public interface IInitializable
 {
     void OnLoaded();
 }
+
+/// <summary>
+/// What <see cref="Saving.SoftDeleteSaveChangesInterceptor"/> does when the same
+/// <c>SaveChanges</c> also hard-deletes entities without <see cref="ISoftDeletableEntity"/>
+/// (e.g. soft-deleting an <c>Order</c> together with a hard-deletable <c>TempFile</c>).
+/// </summary>
+public enum SoftDeleteOrphanPolicy
+{
+    /// <summary>Throw <c>SoftDeleteCascadeException</c> (safe default: no silent mixed deletes).</summary>
+    Throw,
+
+    /// <summary>Allow unrelated hard deletes in the same unit of work.</summary>
+    AllowHardDelete,
+}

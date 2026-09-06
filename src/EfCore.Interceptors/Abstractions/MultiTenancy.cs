@@ -33,7 +33,8 @@ public sealed class MassOperationException(string message) : InvalidOperationExc
 public sealed class ConcurrencyConflictException(string message, Exception inner) : InvalidOperationException(message, inner);
 
 /// <summary>Raised by StrictQueryPolicyQueryExpressionInterceptor for forbidden query shapes.</summary>
-public sealed class QueryPolicyViolationException(string message) : InvalidOperationException(message);
+/// <remarks>Unsealed so bulk-guard violations share the same catch clause (audit §2.1 criterion).</remarks>
+public class QueryPolicyViolationException(string message) : InvalidOperationException(message);
 
 /// <summary>Raised by WritesRequireTransactionCommandInterceptor when a write runs outside an explicit transaction.</summary>
 public sealed class MissingTransactionException(string message) : InvalidOperationException(message);

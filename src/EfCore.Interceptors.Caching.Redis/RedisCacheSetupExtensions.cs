@@ -42,7 +42,7 @@ public static class RedisCacheSetupExtensions
         IDistributedCache cache,
         TimeSpan? timeToLive = null,
         bool skipInsideTransactions = true,
-        bool invalidateOnWrites = false)
+        bool invalidateOnWrites = true)
         => setup.WithSecondLevelCache(
             new DistributedQueryCacheStore(cache, timeToLive),
             timeToLive, skipInsideTransactions, invalidateOnWrites);

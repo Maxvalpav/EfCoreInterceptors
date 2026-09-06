@@ -104,3 +104,60 @@ public sealed class DistributedQueryCacheStore : IQueryCacheStore
         catch { return null; }
     }
 }
+
+/// <summary>
+/// Contributes an extra isolating part to the second-level cache key (tenant id, session
+/// version, schema override, ...). The cache is correct only if everything that affects the
+/// result rows is present in the SQL/parameters or in a contributor part: filters baked as
+/// constants (captured variables in query filters), RLS policies, <c>current_setting</c> and
+/// session state set via <c>WithSessionInit</c> are invisible to the default key.
+/// Return null/empty when the contributor does not apply.
+/// </summary>
+public interface IQueryCacheKeyContributor
+{
+    /// <param name="command">The command about to be executed (SQL + parameters available).</param>
+    /// <param name="eventData">EF command event (may carry the DbContext); can be null in diagnostics.</param>
+    string? Contribute(System.Data.Common.DbCommand command, Microsoft.EntityFrameworkCore.Diagnostics.CommandEventData? eventData);
+}
+
+/// <summary>Tenant isolation for the second-level cache (shared-database multi-tenancy).</summary>
+/// <remarks>
+/// Parameterized tenant filters already isolate keys via parameter values, but constant-captured
+/// filters (<c>ApplyTenantFilters(provider)</c>), per-tenant models (<c>TenantModelCacheKeyFactory</c>)
+/// and schema/session isolation (<c>WithSessionInit</c>) can produce identical SQL+parameters for
+/// different tenants. <c>BuildInto</c> wires this contributor automatically when
+/// <c>WithMultiTenancy</c> is used together with a cache.
+/// </remarks>
+public sealed class TenantKeyContributor(ITenantProvider tenantProvider) : IQueryCacheKeyContributor
+{
+    public string? Contribute(System.Data.Common.DbCommand command, Microsoft.EntityFrameworkCore.Diagnostics.CommandEventData? eventData)
+        => tenantProvider.CurrentTenantId;
+}
+
+/// <summary>Options-object for <c>CachingCommandInterceptor</c> (no positional boolean trap).</summary>
+public sealed class CachingOptions
+{
+    /// <summary>Entry time-to-live. Default 30 seconds.</summary>
+    public TimeSpan TimeToLive { get; set; } = TimeSpan.FromSeconds(30);
+
+    /// <summary>Skip caching inside explicit transactions (avoids dirty reads). Default true.</summary>
+    public bool SkipInsideTransactions { get; set; } = true;
+
+    /// <summary>Evict affected entries on writes (targeted by table). Default true (read-your-writes).</summary>
+    public bool InvalidateOnWrites { get; set; } = true;
+
+    /// <summary>Maximum cached entries. Default 1000.</summary>
+    public int MaxEntries { get; set; } = 1000;
+
+    /// <summary>Maximum rows buffered per entry (entries above bypass the store but are still served). Default 10 000.</summary>
+    public int MaxRowsPerEntry { get; set; } = 10_000;
+
+    /// <summary>Maximum bytes buffered per entry. Default 8 MiB.</summary>
+    public long MaxBytesPerEntry { get; set; } = 8 * 1024 * 1024;
+
+    /// <summary>Custom store (Redis/distributed). Default in-memory.</summary>
+    public IQueryCacheStore? Store { get; set; }
+
+    /// <summary>Key contributors (tenant id, session version, ...).</summary>
+    public List<IQueryCacheKeyContributor> KeyContributors { get; } = [];
+}

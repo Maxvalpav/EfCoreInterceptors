@@ -40,6 +40,19 @@ public class MultiTenancySaveChangesInterceptor(ITenantProvider tenantProvider) 
     protected virtual void ApplyTenantRules(DbContext? context)
     {
         if (context is null) return;
+        try
+        {
+            ApplyTenantRulesCore(context);
+        }
+        catch (CrossTenantAccessException)
+        {
+            Observability.SharedMeter.InterceptorTenantDenied.Add(1);
+            throw;
+        }
+    }
+
+    private void ApplyTenantRulesCore(DbContext context)
+    {
         var currentTenant = _tenants.CurrentTenantId;
         foreach (var entry in ChangeTrackerSnapshot.Get<ITenantEntity>(context))
         {

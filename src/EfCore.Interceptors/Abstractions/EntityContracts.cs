@@ -66,3 +66,27 @@ public interface IEntityValidator
     /// <summary>Returns violation messages for the entity; empty = valid.</summary>
     IEnumerable<string> Validate(object entity);
 }
+
+/// <summary>
+/// Generates the <see cref="IAuditableEntity"/> implementation (source generator
+/// <c>EfCore.Interceptors.Generators</c>): apply to a partial class and the audit
+/// columns are emitted automatically. The class must be declared partial.
+/// </summary>
+[AttributeUsage(AttributeTargets.Class)]
+public sealed class AuditableAttribute : Attribute;
+
+/// <summary>
+/// Generates the <see cref="ISoftDeletableEntity"/> implementation (source generator
+/// <c>EfCore.Interceptors.Generators</c>): apply to a partial class and the soft-delete
+/// columns are emitted automatically. The class must be declared partial.
+/// </summary>
+[AttributeUsage(AttributeTargets.Class)]
+public sealed class SoftDeletableAttribute : Attribute;
+
+/// <summary>
+/// Generates the <see cref="IHasDomainEvents"/> implementation with a
+/// <c>[NotMapped]</c> event queue (source generator <c>EfCore.Interceptors.Generators</c>):
+/// apply to a partial class. The class must be declared partial.
+/// </summary>
+[AttributeUsage(AttributeTargets.Class)]
+public sealed class HasDomainEventsAttribute : Attribute;

@@ -253,6 +253,46 @@ public enum EncryptionMigrationMode
 }
 
 /// <summary>
+/// External key source for envelope encryption (audit §2.3: master key belongs in a
+/// KMS / secret manager, not in app configuration). Implement against Azure KeyVault,
+/// AWS KMS, HashiCorp Vault or DPAPI; see <see cref="EnvironmentKeyValueProvider"/>
+/// for the simplest (environment variable) source.
+/// </summary>
+public interface IKeyValueProvider
+{
+    /// <summary>Returns a copy of the 32-byte key for <paramref name="keyId"/>; throws when unavailable.</summary>
+    byte[] GetKey(string keyId);
+}
+
+/// <summary>
+/// Reads a Base64-encoded 32-byte key from an environment variable
+/// (12-factor / container-secret friendly). Pair with process-level secret injection;
+/// rotate by pointing the variable at the new version and keeping the old value
+/// under a second variable during migration.
+/// </summary>
+public sealed class EnvironmentKeyValueProvider(string variableName) : IKeyValueProvider
+{
+    public string VariableName { get; } = variableName;
+
+    public byte[] GetKey(string keyId)
+    {
+        var raw = Environment.GetEnvironmentVariable(VariableName);
+        if (string.IsNullOrWhiteSpace(raw))
+            throw new InvalidOperationException(
+                $"Encryption key '{keyId}' unavailable: environment variable '{VariableName}' is not set. " +
+                "Refusing to start with plaintext fallback (no secret is logged).");
+        var bytes = Convert.FromBase64String(raw.Trim());
+        if (bytes.Length != 32)
+        {
+            CryptographicOperations.ZeroMemory(bytes);
+            throw new InvalidOperationException(
+                $"Encryption key '{keyId}' invalid: environment variable '{VariableName}' must decode to 32 bytes (AES-256).");
+        }
+        return bytes;
+    }
+}
+
+/// <summary>
 /// Key ring for rotation (07.2): the payload carries a key id (<c>kid</c>), so keys
 /// rotate without dump-and-re-encrypt downtime. Register the retired key under its
 /// old kid to keep reading old rows; new rows always use <see cref="CurrentKid"/>.
@@ -299,6 +339,20 @@ public sealed class StaticKeyRing : IKeyRing, IDisposable
         if (kid >= _keys.Count)
             throw new ArgumentOutOfRangeException(nameof(kid), $"Unknown key id {kid} (ring holds {_keys.Count} keys).");
         return _keys[kid];
+    }
+
+    /// <summary>
+    /// Startup check (audit §2.3): verifies the current kid resolves and can round-trip.
+    /// Call at host startup — fails fast with a diagnosis (never logging the secret)
+    /// instead of discovering an unavailable ring on the first encrypted write.
+    /// </summary>
+    public void EnsureAvailable()
+    {
+        if (_disposed) throw new ObjectDisposedException(nameof(StaticKeyRing));
+        var key = GetKey(_currentKid);
+        if (key.Length != 32)
+            throw new InvalidOperationException(
+                $"Encryption key ring unavailable: kid {_currentKid} did not resolve to 32 bytes.");
     }
 
     public void Dispose()
@@ -467,5 +521,59 @@ public sealed class KeyRingPropertyValueEncryptor : IPropertyValueEncryptor, IDi
             return payload.Length >= 2 + 12 + 16 && (payload[0] == Version2 || payload[0] == 0x01);
         }
         catch { return false; }
+    }
+}
+
+/// <summary>
+/// Marks a string property as a searchable blind index for another property: put on the index
+/// column, naming the source (<c>[BlindIndexOf(nameof(Email))]</c>). On save the interceptor
+/// stores <c>HMAC-SHA256(indexKey, context + plaintext)</c> hex there, so equality lookups work
+/// without deterministic encryption: <c>db.Users.Where(u => u.EmailHash == HmacBlindIndex.For(email, key))</c>.
+/// Unlike deterministic ciphertext the index reveals only equality (and needs its own key), while
+/// the source column keeps random nonces. The index property must be a mapped string.
+/// </summary>
+[AttributeUsage(AttributeTargets.Property)]
+public sealed class BlindIndexOfAttribute(string sourcePropertyName) : Attribute
+{
+    public string SourcePropertyName { get; } = sourcePropertyName;
+}
+
+/// <summary>Key material for blind-index computation (separate from the encryption key).</summary>
+/// <param name="Base64Key">32-byte HMAC key, Base64-encoded.</param>
+/// <param name="Context">Domain separation (table or feature name); part of the HMAC input.</param>
+public sealed record BlindIndexOptions(string Base64Key, string? Context = null);
+
+/// <summary>
+/// HMAC-SHA256 blind index: deterministic, keyed equality token for encrypted columns.
+/// Same (key, context, value) always yields the same lowercase hex string; null maps to null.
+/// </summary>
+public static class HmacBlindIndex
+{
+    /// <summary>Computes the index token with a raw 32-byte key.</summary>
+    public static string? Compute(string? value, byte[] key, string? context = null)
+    {
+        if (value is null) return null;
+        if (key.Length != 32)
+            throw new ArgumentException("Blind-index key must be 32 bytes (HMAC-SHA256).", nameof(key));
+        var contextBytes = string.IsNullOrEmpty(context) ? [] : Encoding.UTF8.GetBytes(context);
+        var valueBytes = Encoding.UTF8.GetBytes(value);
+        var input = new byte[contextBytes.Length + valueBytes.Length];
+        Buffer.BlockCopy(contextBytes, 0, input, 0, contextBytes.Length);
+        Buffer.BlockCopy(valueBytes, 0, input, contextBytes.Length, valueBytes.Length);
+        return Convert.ToHexString(HMACSHA256.HashData(key, input)).ToLowerInvariant();
+    }
+
+    /// <summary>Computes the index token with a Base64-encoded 32-byte key (for inline queries).</summary>
+    public static string? For(string? value, string base64Key, string? context = null)
+    {
+        var key = Convert.FromBase64String(base64Key);
+        try
+        {
+            return Compute(value, key, context);
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(key);
+        }
     }
 }

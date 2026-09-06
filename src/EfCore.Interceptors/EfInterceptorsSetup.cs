@@ -47,10 +47,12 @@ public sealed partial class EfInterceptorsSetup
         return this;
     }
 
-    private void AddOrReplace<T>(T interceptor) where T : IInterceptor
+    private EfInterceptorsSetup AddOrReplace(IInterceptor interceptor)
     {
-        _interceptors.RemoveAll(i => i.GetType() == typeof(T));
+        var type = interceptor.GetType();
+        _interceptors.RemoveAll(i => i.GetType() == type);
         _interceptors.Add(interceptor);
+        return this;
     }
 
     internal void BuildInto(DbContextOptionsBuilder builder)
@@ -63,20 +65,34 @@ public sealed partial class EfInterceptorsSetup
             builder.ReplaceService<Microsoft.EntityFrameworkCore.Infrastructure.IModelCacheKeyFactory, Model.TenantModelCacheKeyFactory>();
             _loggerFactory?.CreateLogger("EfCore.Interceptors").LogInformation(
                 "TenantModelCacheKeyFactory auto-registered (WithMultiTenancy).");
+            // Tenant-isolate every registered second-level cache: constant-captured filters,
+            // per-tenant models and session/schema isolation can otherwise serve tenant A's
+            // rows to tenant B from the cache (identical SQL + parameters, one connection string).
+            foreach (var c in _interceptors.OfType<Commands.CachingCommandInterceptor>())
+                c.AddContributor(new Abstractions.TenantKeyContributor(_tenantProvider));
         }
         if (_interceptors.Count > 0)
         {
             var hasCommandInterceptor = _interceptors.Any(i => i is DbCommandInterceptor);
             if (hasCommandInterceptor)
             {
-                var extensionNames = string.Join(",", builder.Options.Extensions.Select(e => e.GetType().Name));
-                if (extensionNames.Contains("Cosmos", StringComparison.OrdinalIgnoreCase) || extensionNames.Contains("InMemory", StringComparison.OrdinalIgnoreCase))
+                var isRelational = builder.Options.Extensions.OfType<Microsoft.EntityFrameworkCore.Infrastructure.RelationalOptionsExtension>().Any();
+                if (!isRelational)
                 {
+                    var extensionNames = string.Join(",", builder.Options.Extensions.Select(e => e.GetType().Name));
                     var logger = _loggerFactory?.CreateLogger("EfCore.Interceptors");
                     var msg = $"[EfCore.Interceptors] Warning: command interceptors registered with non-relational provider ({extensionNames}) — they will never be invoked.";
                     if (logger != null) logger.LogWarning("{Message}", msg);
                     else System.Diagnostics.Trace.WriteLine(msg);
                 }
+            }
+            if (_interceptors.OfType<Commands.CachingCommandInterceptor>().Any()
+                && _interceptors.OfType<Connections.SessionInitConnectionInterceptor>().Any())
+            {
+                var logger = _loggerFactory?.CreateLogger("EfCore.Interceptors");
+                var msg = "[EfCore.Interceptors] Warning: second-level cache is combined with session-init statements — session state (search_path, session context, RLS) is invisible to the cache key. Register an IQueryCacheKeyContributor covering the session state or exclude session-dependent queries from caching.";
+                if (logger != null) logger.LogWarning("{Message}", msg);
+                else System.Diagnostics.Trace.WriteLine(msg);
             }
             var ordered = _interceptors
                 .OrderBy(i => (i as IOrderedInterceptor)?.Order ?? 0)
@@ -85,10 +101,33 @@ public sealed partial class EfInterceptorsSetup
         }
     }
 
-    /// <summary>Adds a custom interceptor.</summary>
+    /// <summary>Adds a custom interceptor. Same reference twice is ignored.</summary>
     public EfInterceptorsSetup Add(IInterceptor interceptor)
     {
-        _interceptors.Add(interceptor);
+        if (!_interceptors.Any(i => ReferenceEquals(i, interceptor)))
+            _interceptors.Add(interceptor);
+        return this;
+    }
+
+    /// <summary>
+    /// Safe production starting point (audit §4.1/§4.6): SQL logging without parameter
+    /// values, bulk guard (<c>Throw</c>), strict query policy (forbids
+    /// <c>IgnoreQueryFilters/ExecuteDelete/ExecuteUpdate</c>), raw-SQL usage detection.
+    /// Second-level cache stays off until an invalidation policy is chosen;
+    /// query hints stay off until a provider-guarded set is registered.
+    /// Reversible via <see cref="Commands.BulkOperationGuardInterceptor"/> policy or
+    /// <c>AllowUnsafeBulkOperations</c> (explicit, logged).
+    /// </summary>
+    public EfInterceptorsSetup UseProductionDefaults(ILoggerFactory? loggerFactory = null)
+    {
+        if (loggerFactory is not null) WithLoggerFactory(loggerFactory);
+        WithSqlLogging(loggerFactory, includeParameterValues: false);
+        WithBulkOperationGuard(Commands.BulkOperationPolicy.Throw, loggerFactory);
+        WithStrictQueryPolicy(
+            forbidIgnoreQueryFilters: true,
+            forbidExecuteDelete: true,
+            forbidExecuteUpdate: true);
+        WithRawSqlUsageDetection(loggerFactory);
         return this;
     }
 
@@ -99,30 +138,30 @@ public sealed partial class EfInterceptorsSetup
     /// </summary>
     [Obsolete("Boolean trap (02.7): use WithIdentityResolution(IdentityResolutionMode) instead.")]
     public EfInterceptorsSetup WithIdentityResolution(bool overwriteExisting)
-        => Add(overwriteExisting
+        => AddOrReplace(overwriteExisting
             ? new OverwriteIdentityResolutionInterceptor()
             : new IgnoreIncomingIdentityResolutionInterceptor());
 
     /// <summary>Resolves identity conflicts via explicit mode (avoids boolean trap).</summary>
     public EfInterceptorsSetup WithIdentityResolution(Tracking.IdentityResolutionMode mode)
         => mode == Tracking.IdentityResolutionMode.Overwrite
-            ? Add(new OverwriteIdentityResolutionInterceptor())
-            : Add(new IgnoreIncomingIdentityResolutionInterceptor());
+            ? AddOrReplace(new OverwriteIdentityResolutionInterceptor())
+            : AddOrReplace(new IgnoreIncomingIdentityResolutionInterceptor());
 
     /// <summary>
     /// Identity resolution that fills only null/empty properties of the tracked instance —
     /// non-empty tracked data always wins.
     /// </summary>
     public EfInterceptorsSetup WithNullMergingIdentityResolution()
-        => Add(new Tracking.NullMergeIdentityResolutionInterceptor());
+        => AddOrReplace(new Tracking.NullMergeIdentityResolutionInterceptor());
 
     /// <summary>Identity resolution where the instance with the newer UpdatedAtUtc survives.</summary>
     public EfInterceptorsSetup WithNewestWinsIdentityResolution()
-        => Add(new Tracking.NewestWinsIdentityResolutionInterceptor());
+        => AddOrReplace(new Tracking.NewestWinsIdentityResolutionInterceptor());
 
     /// <summary>Auto-applies soft-delete and tenant filters via model finalizer.</summary>
     public EfInterceptorsSetup WithModelFilters(Abstractions.ITenantProvider? tenantProvider = null, bool softDelete = true, bool tenant = true)
-        => Add(new Model.ModelFiltersInterceptor(tenantProvider, softDelete, tenant));
+        => AddOrReplace(new Model.ModelFiltersInterceptor(tenantProvider, softDelete, tenant));
 
     /// <summary>
     /// Stamps TenantId on inserts and rejects cross-tenant modifications.
@@ -139,10 +178,10 @@ public sealed partial class EfInterceptorsSetup
         bool strictQueryPolicy = true)
     {
         _tenantProvider = tenantProvider;
-        Add(new Saving.MultiTenancySaveChangesInterceptor(tenantProvider));
+        AddOrReplace(new Saving.MultiTenancySaveChangesInterceptor(tenantProvider));
         if (strictQueryPolicy && !_interceptors.OfType<Queries.StrictQueryPolicyQueryExpressionInterceptor>().Any())
         {
-            Add(new Queries.StrictQueryPolicyQueryExpressionInterceptor(forbidIgnoreQueryFilters: true));
+            AddOrReplace(new Queries.StrictQueryPolicyQueryExpressionInterceptor(forbidIgnoreQueryFilters: true));
         }
         return this;
     }

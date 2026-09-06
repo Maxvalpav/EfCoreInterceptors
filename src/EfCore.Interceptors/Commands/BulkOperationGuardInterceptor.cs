@@ -144,4 +144,7 @@ public class BulkOperationGuardInterceptor : DbCommandInterceptor
 }
 
 /// <summary>Raised when a bulk operation touches a guarded table.</summary>
-public sealed class BulkOperationBlockedException(string message) : InvalidOperationException(message);
+/// <remarks>Inherits <see cref="Abstractions.QueryPolicyViolationException"/> so the audit
+/// acceptance criterion ("unsupported bulk fails with QueryPolicyViolationException")
+/// holds while existing <c>catch (BulkOperationBlockedException)</c> keeps working.</remarks>
+public sealed class BulkOperationBlockedException(string message) : Abstractions.QueryPolicyViolationException(message);

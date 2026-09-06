@@ -13,17 +13,20 @@ public sealed partial class EfInterceptorsSetup
     public EfInterceptorsSetup WithAuditing(
         ICurrentUserProvider? currentUserProvider = null,
         TimeProvider? clock = null)
-        => Add(new AuditSaveChangesInterceptor(currentUserProvider, clock));
+        => AddOrReplace(new AuditSaveChangesInterceptor(currentUserProvider, clock));
 
     /// <summary>Turns deletes of ISoftDeletableEntity entities into logical deletes.</summary>
     public EfInterceptorsSetup WithSoftDeletes(
         ICurrentUserProvider? currentUserProvider = null,
-        TimeProvider? clock = null)
-        => Add(new SoftDeleteSaveChangesInterceptor(currentUserProvider, clock));
+        TimeProvider? clock = null,
+        SoftDeleteOrphanPolicy orphanPolicy = SoftDeleteOrphanPolicy.Throw)
+        => AddOrReplace(new SoftDeleteSaveChangesInterceptor(currentUserProvider, clock, orphanPolicy));
 
     /// <summary>Publishes domain events after successful saves.</summary>
+    /// <remarks>May be combined with <c>WithOutbox()</c>: the outbox copies events into rows
+    /// without clearing the aggregates, so in-process handlers still fire.</remarks>
     public EfInterceptorsSetup WithDomainEvents(IDomainEventDispatcher? dispatcher = null)
-        => Add(new DomainEventsSaveChangesInterceptor(dispatcher));
+        => AddOrReplace(new DomainEventsSaveChangesInterceptor(dispatcher));
 
     /// <summary>
     /// Publishes domain events with an explicit post-commit failure policy (05.6):
@@ -35,7 +38,7 @@ public sealed partial class EfInterceptorsSetup
         DispatchFailurePolicy failurePolicy,
         Microsoft.Extensions.Logging.ILoggerFactory? loggerFactory = null,
         TimeProvider? clock = null)
-        => Add(new DomainEventsSaveChangesInterceptor(dispatcher, failurePolicy, loggerFactory, clock));
+        => AddOrReplace(new DomainEventsSaveChangesInterceptor(dispatcher, failurePolicy, loggerFactory, clock));
 
     /// <summary>
     /// Writes a per-property audit trail (old/new JSON diff) to the mapped ChangeLogEntries table
@@ -44,22 +47,23 @@ public sealed partial class EfInterceptorsSetup
     public EfInterceptorsSetup WithChangeLog(
         ICurrentUserProvider? currentUserProvider = null,
         TimeProvider? clock = null)
-        => Add(new ChangeLogSaveChangesInterceptor(currentUserProvider, clock));
+        => AddOrReplace(new ChangeLogSaveChangesInterceptor(currentUserProvider, clock));
 
     /// <summary>
     /// Atomic outbox: serializes domain events into the mapped OutboxMessages table inside the same
     /// transaction as the business change. Requires modelBuilder.Entity&lt;OutboxMessage&gt;().
+    /// May be combined with <c>WithDomainEvents()</c> (in-process dispatch + durable rows).
     /// </summary>
     public EfInterceptorsSetup WithOutbox(TimeProvider? timeProvider = null)
-        => Add(new OutboxSaveChangesInterceptor(timeProvider));
+        => AddOrReplace(new OutboxSaveChangesInterceptor(timeProvider));
 
     /// <summary>Aborts SaveChanges that would touch more rows than the configured limits.</summary>
     public EfInterceptorsSetup WithMassOperationGuard(int maxAdded = 100, int maxModified = 100, int maxDeleted = 100)
-        => Add(new MassOperationGuardSaveChangesInterceptor(maxAdded, maxModified, maxDeleted));
+        => AddOrReplace(new MassOperationGuardSaveChangesInterceptor(maxAdded, maxModified, maxDeleted));
 
     /// <summary>Translates DbUpdateConcurrencyException into ConcurrencyConflictException.</summary>
     public EfInterceptorsSetup WithConcurrencyTranslation()
-        => Add(new ConcurrencyExceptionTranslatorInterceptor());
+        => AddOrReplace(new ConcurrencyExceptionTranslatorInterceptor());
 
     /// <summary>
     /// Классический «retry вокруг SaveChanges» при оптимистичной конкуренции:
@@ -70,49 +74,59 @@ public sealed partial class EfInterceptorsSetup
         ConcurrencyRetryPolicy policy = ConcurrencyRetryPolicy.ClientWins,
         int maxRetries = 3,
         TimeSpan? initialDelay = null)
-        => Add(new ConcurrencyRetrySaveChangesInterceptor(policy, maxRetries, initialDelay));
+        => AddOrReplace(new ConcurrencyRetrySaveChangesInterceptor(policy, maxRetries, initialDelay));
 
     /// <summary>
     /// Точка адаптации внешних валидаторов (FluentValidation и т.п.) без зависимости от них:
     /// реализуйте IEntityValidator и передайте экземпляры сюда.
     /// </summary>
     public EfInterceptorsSetup WithCustomValidation(params IEntityValidator[] validators)
-        => Add(new CustomValidationSaveChangesInterceptor(validators));
+        => AddOrReplace(new CustomValidationSaveChangesInterceptor(validators));
 
     /// <summary>
     /// Runs DataAnnotations validation over every Added/Modified entity before the save and
     /// aborts with EntityValidationException listing ALL violations at once.
     /// </summary>
     public EfInterceptorsSetup WithValidation()
-        => Add(new ValidationSaveChangesInterceptor());
+        => AddOrReplace(new ValidationSaveChangesInterceptor());
 
     /// <summary>Trims all string properties (Added/Modified) before save.</summary>
     public EfInterceptorsSetup WithStringTrimming(Func<string, string?>? normalize = null)
-        => Add(new StringTrimmingSaveChangesInterceptor(normalize));
+        => AddOrReplace(new StringTrimmingSaveChangesInterceptor(normalize));
 
     /// <summary>Shadow-property auditing without IAuditableEntity.</summary>
     public EfInterceptorsSetup WithShadowAuditing(ICurrentUserProvider? currentUserProvider = null, TimeProvider? clock = null)
-        => Add(new ShadowAuditSaveChangesInterceptor(currentUserProvider, clock));
+        => AddOrReplace(new ShadowAuditSaveChangesInterceptor(currentUserProvider, clock));
 
     /// <summary>Rejects deletes of IProtectedEntity entities with ProtectedEntityException.</summary>
     public EfInterceptorsSetup WithDeleteGuard()
-        => Add(new DeleteGuardSaveChangesInterceptor());
+        => AddOrReplace(new DeleteGuardSaveChangesInterceptor());
 
     /// <summary>Rejects modifications/deletes of IImmutableEntity (append-only) entities.</summary>
     public EfInterceptorsSetup WithImmutableGuard()
-        => Add(new ImmutableEntityGuardSaveChangesInterceptor());
+        => AddOrReplace(new ImmutableEntityGuardSaveChangesInterceptor());
 
     /// <summary>Maintains IVersionedEntity.Version (+1 on update) for optimistic concurrency.</summary>
     public EfInterceptorsSetup WithVersionCounter()
-        => Add(new VersionIncrementSaveChangesInterceptor());
+        => AddOrReplace(new VersionIncrementSaveChangesInterceptor());
 
     /// <summary>
     /// Transparent property encryption: [Encrypted] string properties are encrypted on save and
     /// decrypted on materialization. Provide a real IPropertyValueEncryptor in production.
     /// </summary>
     public EfInterceptorsSetup WithPropertyEncryption(IPropertyValueEncryptor encryptor)
-        => Add(new PropertyEncryptionSaveChangesInterceptor(encryptor))
-           .Add(new PropertyDecryptionMaterializationInterceptor(encryptor));
+        => AddOrReplace(new PropertyEncryptionSaveChangesInterceptor(encryptor))
+           .AddOrReplace(new PropertyDecryptionMaterializationInterceptor(encryptor));
+
+    /// <summary>
+    /// Property encryption plus searchable blind indexes: string properties marked with
+    /// <c>[BlindIndexOf(nameof(Source))]</c> store <c>HMAC-SHA256(indexKey, ...)</c> tokens,
+    /// so equality lookups work while source columns keep random nonces.
+    /// Query with <c>HmacBlindIndex.For(plaintext, base64Key, context)</c>.
+    /// </summary>
+    public EfInterceptorsSetup WithPropertyEncryption(IPropertyValueEncryptor encryptor, BlindIndexOptions blindIndex)
+        => AddOrReplace(new PropertyEncryptionSaveChangesInterceptor(encryptor, blindIndex))
+           .AddOrReplace(new PropertyDecryptionMaterializationInterceptor(encryptor));
 
     /// <summary>Deterministic searchable encryption for equality lookups. Requires deterministic encryptor (e.g. DeterministicAesGcmEncryptor) — random-nonce encryptors will produce non-searchable ciphertext.</summary>
     public EfInterceptorsSetup WithSearchableEncryption(IPropertyValueEncryptor encryptor)
@@ -122,8 +136,8 @@ public sealed partial class EfInterceptorsSetup
             var logger = _loggerFactory?.CreateLogger("EfCore.Interceptors");
             logger?.LogWarning("WithSearchableEncryption called with non-deterministic encryptor {Type} — equality search will not work, use DeterministicAesGcmEncryptor", encryptor.GetType().Name);
         }
-        return Add(new PropertyEncryptionSaveChangesInterceptor(encryptor))
-            .Add(new PropertyDecryptionMaterializationInterceptor(encryptor));
+        return AddOrReplace(new PropertyEncryptionSaveChangesInterceptor(encryptor))
+            .AddOrReplace(new PropertyDecryptionMaterializationInterceptor(encryptor));
     }
 
     /// <summary>
@@ -142,8 +156,8 @@ public sealed partial class EfInterceptorsSetup
     /// Register after <c>WithPropertyEncryption</c> so authorization wins over decrypted values.
     /// </summary>
     public EfInterceptorsSetup WithFieldAuthorization(IRoleProvider roles)
-        => Add(new FieldAuthorizationSaveChangesInterceptor(roles))
-           .Add(new Materialization.FieldAuthorizationMaterializationInterceptor(roles));
+        => AddOrReplace(new FieldAuthorizationSaveChangesInterceptor(roles))
+           .AddOrReplace(new Materialization.FieldAuthorizationMaterializationInterceptor(roles));
 
     /// <summary>
     /// Write-side row-level security guard (03.2). Pair with
@@ -152,7 +166,7 @@ public sealed partial class EfInterceptorsSetup
     /// </summary>
     public EfInterceptorsSetup WithRowLevelSecurity<T>(System.Linq.Expressions.Expression<System.Func<T, bool>> filter)
         where T : class
-        => Add(new RowLevelSecuritySaveChangesInterceptor<T>(filter));
+        => AddOrReplace(new RowLevelSecuritySaveChangesInterceptor<T>(filter));
 
     /// <summary>
     /// Blue-green expand-contract (03.16): dual-writes <c>[MigratedFrom]</c> NEW values
@@ -160,8 +174,8 @@ public sealed partial class EfInterceptorsSetup
     /// migration window, then drop the old column and the interceptors.
     /// </summary>
     public EfInterceptorsSetup WithExpandContract()
-        => Add(new ExpandContractSaveChangesInterceptor())
-           .Add(new Materialization.ExpandContractFallbackMaterializationInterceptor());
+        => AddOrReplace(new ExpandContractSaveChangesInterceptor())
+           .AddOrReplace(new Materialization.ExpandContractFallbackMaterializationInterceptor());
 
     /// <summary>
     /// System-versioned history for <c>[Temporal]</c> entities (03.1, SCD Type 2).
@@ -172,11 +186,11 @@ public sealed partial class EfInterceptorsSetup
         ICurrentUserProvider? currentUserProvider = null,
         TimeProvider? clock = null,
         params Type[] trackedTypes)
-        => Add(new TemporalSaveChangesInterceptor(currentUserProvider, clock, trackedTypes));
+        => AddOrReplace(new TemporalSaveChangesInterceptor(currentUserProvider, clock, trackedTypes));
 
     /// <summary>System-versioned history for one explicit entity type (no attribute needed).</summary>
     public EfInterceptorsSetup WithTemporalTracking<T>(
         ICurrentUserProvider? currentUserProvider = null,
         TimeProvider? clock = null)
-        => Add(new TemporalSaveChangesInterceptor(currentUserProvider, clock, typeof(T)));
+        => AddOrReplace(new TemporalSaveChangesInterceptor(currentUserProvider, clock, typeof(T)));
 }

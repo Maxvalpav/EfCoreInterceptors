@@ -1,3 +1,4 @@
+using System.ComponentModel.DataAnnotations.Schema;
 using System.Text.Json.Serialization;
 
 namespace EfCore.Interceptors.Entities;
@@ -69,4 +70,39 @@ public class OutboxMessage
 
     /// <summary>Last delivery error (if any).</summary>
     public string? Error { get; set; }
+
+    /// <summary>
+    /// Alias of <see cref="Error"/> under the audit (§2.4) name <c>LastError</c>.
+    /// Not mapped — reads/writes the same column value.
+    /// </summary>
+    [NotMapped]
+    public string? LastError { get => Error; set => Error = value; }
+
+    /// <summary>
+    /// First failure timestamp (audit §2.4 <c>FailedAtUtc</c>). Set on the first
+    /// failed delivery attempt; null while the message never failed.
+    /// </summary>
+    public DateTimeOffset? FailedAtUtc { get; set; }
+
+    /// <summary>
+    /// Audit (§2.4) name for the idempotency key (<c>MessageId</c>).
+    /// Not mapped — reads/writes <see cref="IdempotencyKey"/>.
+    /// </summary>
+    [NotMapped]
+    public Guid MessageId { get => IdempotencyKey; set => IdempotencyKey = value; }
+
+    /// <summary>
+    /// Idempotency key for at-least-once consumers: stable for (event type, aggregate, version)
+    /// when the event implements <see cref="Abstractions.IHasEventIdentity"/> (see
+    /// <see cref="Abstractions.OutboxEventKeys"/>), unique per instance otherwise.
+    /// Store handled keys on the consumer side and skip repeats.
+    /// </summary>
+    public Guid IdempotencyKey { get; set; }
+
+    /// <summary>
+    /// Partition key for ordered parallel delivery: the aggregate id when the event carries
+    /// identity, else the event type name. Workers can claim disjoint partitions and each
+    /// partition stays FIFO (claim query orders by <see cref="Id"/> within a partition).
+    /// </summary>
+    public string? PartitionKey { get; set; }
 }

@@ -58,4 +58,45 @@ internal static class SharedMeter
     public static readonly Histogram<double> CacheServeDuration =
         DurationHistogram(Meter, "ef.cache.serve_duration", "s",
             "Time to serve a query result from cache in seconds.");
+
+    // Audit §4.5 stable names (aliases over the instruments above; no raw values in tags).
+    public static readonly Counter<long> InterceptorCommandsTotal =
+        Meter.CreateCounter<long>("ef.interceptor.commands.total", description: "Total EF commands observed.");
+    public static readonly Histogram<double> InterceptorCommandDuration =
+        DurationHistogram(Meter, "ef.interceptor.command.duration", "s",
+            "EF command duration in seconds.");
+    public static readonly System.Diagnostics.Metrics.UpDownCounter<long> InterceptorOutboxPending =
+        Meter.CreateUpDownCounter<long>("ef.interceptor.outbox.pending", description: "Outbox messages claimed but not yet resolved.");
+    public static readonly Counter<long> InterceptorOutboxDeliveryFailures =
+        Meter.CreateCounter<long>("ef.interceptor.outbox.delivery_failures", description: "Outbox delivery failures.");
+    public static readonly Counter<long> InterceptorTenantDenied =
+        Meter.CreateCounter<long>("ef.interceptor.tenant_denied", description: "Cross-tenant operations rejected.");
+
+    private static long _auditCacheHits;
+    private static long _auditCacheMisses;
+
+    static SharedMeter()
+    {
+        Meter.CreateObservableGauge("ef.interceptor.cache.hit_ratio",
+            () =>
+            {
+                var hits = System.Threading.Interlocked.Read(ref _auditCacheHits);
+                var misses = System.Threading.Interlocked.Read(ref _auditCacheMisses);
+                var total = hits + misses;
+                return total == 0 ? 0.0 : (double)hits / total;
+            },
+            description: "Second-level cache hit ratio.");
+    }
+
+    /// <summary>Audit-alias cache recording: keeps legacy counters and feeds hit_ratio.</summary>
+    public static void RecordCacheHit()
+    {
+        System.Threading.Interlocked.Increment(ref _auditCacheHits);
+    }
+
+    /// <summary>Audit-alias cache recording: keeps legacy counters and feeds hit_ratio.</summary>
+    public static void RecordCacheMiss()
+    {
+        System.Threading.Interlocked.Increment(ref _auditCacheMisses);
+    }
 }

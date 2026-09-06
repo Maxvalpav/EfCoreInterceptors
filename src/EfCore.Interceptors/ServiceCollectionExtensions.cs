@@ -17,7 +17,9 @@ public static class ServiceCollectionExtensions
     ///     options.UseSqlServer(cs).UseEfInterceptorsFrom(sp));
     /// </code>
     /// For scoped dependencies (e.g. a per-request current user), register your own
-    /// interceptor instances instead — see README.
+    /// interceptor instances instead — see README. Call
+    /// <c>EfInterceptorsValidator.ValidateLifetimes(services)</c> at startup to catch
+    /// scoped-provider/singleton-interceptor mismatches (EFI2020).
     /// </summary>
     public static IServiceCollection AddEfInterceptors(
         this IServiceCollection services,
