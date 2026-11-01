@@ -40,17 +40,20 @@ public static class DashboardStore
         DbContext db, OutboxStatus status = OutboxStatus.Pending,
         int take = 50, CancellationToken ct = default)
     {
-        var query = db.Set<OutboxMessage>()
-            .Where(m => m.ProcessedAtUtc == null)
-            .OrderByDescending(m => m.Id);
-        var rows = await query.Take(Math.Clamp(take, 1, 500)).AsNoTracking()
-            .ToListAsync(ct).ConfigureAwait(false);
-        return status switch
+        // Status must be filtered in SQL *before* Take: filtering the newest N rows
+        // afterwards hid every dead-letter older than the N newest pending ones.
+        var query = db.Set<OutboxMessage>().Where(m => m.ProcessedAtUtc == null);
+        query = status switch
         {
-            OutboxStatus.Pending => rows.Where(m => m.DeadLetteredAtUtc == null).ToList(),
-            OutboxStatus.Dead => rows.Where(m => m.DeadLetteredAtUtc != null).ToList(),
-            _ => rows
+            OutboxStatus.Pending => query.Where(m => m.DeadLetteredAtUtc == null),
+            OutboxStatus.Dead => query.Where(m => m.DeadLetteredAtUtc != null),
+            _ => query
         };
+        return await query
+            .OrderByDescending(m => m.Id)
+            .Take(Math.Clamp(take, 1, 500))
+            .AsNoTracking()
+            .ToListAsync(ct).ConfigureAwait(false);
     }
 
     /// <summary>Requeues one message: clears dead-letter state, attempts and locks.</summary>

@@ -1,6 +1,13 @@
 # Changelog
 
 ## Unreleased
+- Audit 2026-11 (working-capability, see `AUDIT-2026-11.md`): second-level-cache dependency
+  parser now understands quoted schema-qualified table names (`"public"."Orders"`,
+  `[dbo].[Orders]`, `` `shop`.`Orders` ``) — before, `FROM "public"."Orders"` was recorded as a
+  dependency on the *schema* `public`, so table-targeted invalidation degenerated into
+  "evict everything in that schema" (`Audit2026Q4Tests`); dashboard
+  `GET /api/outbox?status=Dead` filters the status in SQL before `Take` (dead-letters were
+  hidden behind newer pending rows); MediatR `PublicAPI.*.txt` normalised (0-byte file)
 - Security S-2 (strict tenant isolation): `WithMultiTenancy()` installs a strict query policy
   (`IgnoreQueryFilters` forbidden) by default, opt-out via `strictQueryPolicy: false`;
   `WithStrictQueryPolicy` gains `forbidUntaggedRawSql` + `rawSqlBypassTag` (`TagWith("tenant-safe")`

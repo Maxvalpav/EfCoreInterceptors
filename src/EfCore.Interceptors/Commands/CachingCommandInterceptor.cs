@@ -367,12 +367,19 @@ public class CachingCommandInterceptor : DbCommandInterceptor, Microsoft.EntityF
         => IsSelect(command.CommandText)
            && (!_skipInsideTransactions || (eventData.Context?.Database.CurrentTransaction is null && command.Transaction is null));
 
+    // One SQL table reference, optionally schema/catalog qualified:
+    // "public"."Orders", [dbo].[Orders], `shop`.`Orders`, dbo.Orders, "Orders", [Orders], Orders.
+    // The previous single-part alternative matched only the first quoted part, so
+    // FROM "public"."Orders" was recorded as a dependency on "public" (the schema name) and
+    // table-targeted invalidation degenerated into "evict everything in that schema".
+    private const string TableReference =
+        @"(?:(?:\""[^\""]+\""|\[[^\]]+\]|`[^`]+`|[A-Za-z_][\w#@$]*)\s*\.\s*)*(?:\""[^\""]+\""|\[[^\]]+\]|`[^`]+`|[A-Za-z_][\w#@$]*)";
     private static readonly System.Text.RegularExpressions.Regex ReadTablesRegex = new(
-        @"\b(?:FROM|JOIN)\s+(?:\""[^\""]+\""|[\w\.\[\]""]+)",
+        @"\b(?:FROM|JOIN)\s+" + TableReference,
         System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.Compiled,
         TimeSpan.FromMilliseconds(100));
     private static readonly System.Text.RegularExpressions.Regex WriteTablesRegex = new(
-        @"\b(?:UPDATE\s+(?:OR\s+(?:IGNORE|REPLACE|ABORT|FAIL|ROLLBACK)\s+)?|INSERT\s+INTO\s+|DELETE\s+FROM\s+)(?:\""[^\""]+\""|[\w\.\[\]""]+)",
+        @"\b(?:UPDATE\s+(?:OR\s+(?:IGNORE|REPLACE|ABORT|FAIL|ROLLBACK)\s+)?|INSERT\s+INTO\s+|DELETE\s+FROM\s+)" + TableReference,
         System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.Compiled,
         TimeSpan.FromMilliseconds(100));
     private static readonly System.Text.RegularExpressions.Regex DepTagRegex = new(
