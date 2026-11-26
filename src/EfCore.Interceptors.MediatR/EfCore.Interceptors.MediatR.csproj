@@ -19,6 +19,8 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <PackageReference Include="Microsoft.EntityFrameworkCore" VersionOverride="9.0.23" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Relational" VersionOverride="9.0.23" />
     <ProjectReference Include="..\EfCore.Interceptors\EfCore.Interceptors.csproj" />
     <PackageReference Include="MediatR" Version="12.5.0" />
   </ItemGroup>
